@@ -1,0 +1,12 @@
+node_modules/
+output/
+.test-artifacts/
+*.tgz
+/opencode.json
+/opencode.jsonc
+.env
+.env.*
+!.env.example
+auth.json
+.npmrc
+*.log
