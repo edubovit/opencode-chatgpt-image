@@ -8,12 +8,13 @@ Use Node.js 24+ and npm. On Windows, `npm.cmd` avoids the PowerShell shim restri
 npm ci --ignore-scripts
 npm run check
 npm run smoke
+npm run smoke -- --api
 npm pack --dry-run
 ```
 
 `check` runs strict TypeScript checking and Node's test runner. Unit tests use synthetic credentials and injected HTTP responses. File-symlink tests skip when the OS does not grant symlink creation; directory-junction checks still run on Windows.
 
-`smoke` uses a private installed OpenCode server, isolated user state, a synthetic chat provider, and a test-only image transport. It must not read real account credentials or contact a paid provider. Set `OPENCODE_BIN` to the installed executable if it is not discoverable; on Windows use `opencode.exe`, not a `.ps1` or `.cmd` shim. Pass a plugin directory after `--` to test a separately installed package: `npm run smoke -- /path/to/node_modules/opencode-chatgpt-image`. Test packaged TypeScript through OpenCode's runtime, not Node's native type stripping, which rejects TypeScript inside `node_modules`.
+`smoke` uses a private installed OpenCode server, isolated user state, a synthetic chat provider, and a test-only image transport. `--api` starts in API mode without any saved OAuth credential. Both runs exercise watched configuration changes, invalid-key disabling, and mutually exclusive tool registration. No real account credentials or paid providers are used. Set `OPENCODE_BIN` to the installed executable if it is not discoverable; on Windows use `opencode.exe`, not a `.ps1` or `.cmd` shim. Pass a plugin directory after `--` to test a separately installed package: `npm run smoke -- /path/to/node_modules/opencode-chatgpt-image`. Test packaged TypeScript through OpenCode's runtime, not Node's native type stripping, which rejects TypeScript inside `node_modules`.
 
 The package exports TypeScript source directly for OpenCode's plugin runtime. No build or install lifecycle script is required. The root `index.ts` also supports configured local-directory discovery, which does not consult package exports. The entrypoint, `src/`, `docs/`, README, package manifest, and license are packaged; test harnesses are not part of the plugin.
 
@@ -31,13 +32,19 @@ Successful generation establishes account/transport compatibility, not the ident
 
 ## Contracts
 
-- `src/index.ts` is the V2 `Plugin.define` entrypoint. It registers one direct tool and aborts active requests on unload.
+- `src/index.ts` is the V2 `Plugin.define` entrypoint. Valid options register exactly one direct tool, and unload aborts active requests. Invalid options intentionally complete setup without tools and emit a static warning: throwing would let OpenCode 2.1.4 restore a previous working generation with stale options. Invalid API configuration never falls back to subscription mode.
+- `src/config.ts` parses `mode`, `apiKey`, and parameter `defaults`. Caller parameters are merged and validated as an effective combination. Orientation is converted to size, never sent as an invented API field. Errors never include configuration values.
+- Caller `null` clears the optional compression, moderation, fidelity and identity defaults before validation. It never appears on the wire; required/defaulted core controls still reject null. This lets callers change operation or format without inheriting incompatible optional settings.
+- `src/api-tool.ts` implements API-mode permissions, bounded input uploads, local output preflight, generation/edit dispatch, and all returned attachments. API keys remain in the private execution closure, not the schema, tool inputs or result metadata. Partial batch writes are reported without deleting completed outputs.
+- `src/openai.ts` calls only `api.openai.com/v1/images/generations` (JSON) or `images/edits` (multipart). It has no credential lookup, redirects or retries. All supplied authentication comes from plugin configuration. It expects the exact requested image count and format. Requests are limited to 200 MiB, response bodies to 256 MiB, decoded images to 32 MiB each.
 - `src/tool.ts` validates arguments, resolves the invoking session's directory, checks permissions, orchestrates generation, and returns text plus native `type: "file"` image content. It never sets `output` without an output schema.
 - `src/auth.ts` resolves only the active saved OpenAI OAuth connection through the host. It accepts `chatgpt-browser` and `chatgpt-headless`, rejects token-sharing markers, and rechecks the active connection after resolution. Concurrent resolutions within one tool instance are coalesced; credentials are not cached between completed calls. The host owns refresh tokens.
 - `src/codex.ts` makes one request to the fixed `chatgpt.com/backend-api/codex/images/generations` or `images/edits` endpoint. Redirects, alternate hosts, API keys, and automatic retries are disallowed. Errors discard upstream bodies. Request/response bodies are capped at 48 MiB; decoded PNG output at 32 MiB. PNG checks validate structure, not every pixel or CRC.
 - `src/files.ts` resolves canonical paths inside the session tree, reads bounded local references, and writes with exclusive creation. Failed writes remove only the newly created file if its identity still matches. Standard Node path checks cannot form a sandbox against hostile concurrent directory replacement.
 
-The request label is `gpt-image-2`, matching the Codex client contract. It is recorded as `requested_model`, never as proof of the effective model. `effective_model` remains `null` even if the backend returns an apparent model label. Size and quality are sent as `auto`.
+In subscription mode the request label is `gpt-image-2`, matching the Codex client contract. It is recorded as `requested_model`, never as proof of the effective model. `effective_model` remains `null` even if the backend returns an apparent model label. Size and quality are sent as `auto`. API mode forwards explicit model/size/quality under the public API contract; result metadata labels these as requested values rather than independently verified model identity.
+
+API mode supports nonstreaming GPT Image generation/editing, not retired DALL·E controls or streaming partials. The multipart edit contract omits moderation, so that field is rejected for edits. Input fidelity on 2.5 is unverified and rejected. Mask limits follow the stricter multipart reference (<4 MB), not the more permissive guide. These are explicit constraints, never silently dropped overrides. Server-side validation remains authoritative for reference/overlay alignment and actual transparent pixels.
 
 Permission errors propagate unchanged. Cancellation stops waiting for host permission, session, and credential operations; those public APIs cannot cancel their underlying work, so a host refresh or existing permission request can outlive the tool. Late completion never starts another operation. Cancellation after dispatch cannot cancel remote billing. A session that moves before dispatch or saving is rejected rather than writing to its former location. References can still change on disk between permission approval and reading; treat the workspace and local OS as trusted.
 
@@ -51,3 +58,6 @@ The runtime dependency `@opencode/plugin` is pinned to 2.1.4. Do not infer broad
 - [Images 2.5 availability](https://openai.com/index/introducing-chatgpt-images-2-5)
 - [Unresolved subscription model selection](https://github.com/openai/codex/issues/43965)
 - [Plan-sharing limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+- [Public image generation reference](https://developers.openai.com/api/reference/resources/images/methods/generate)
+- [Image size constraints](https://developers.openai.com/api/docs/guides/image-prompting)
+- [Official Images API types](https://github.com/openai/openai-node/blob/master/src/resources/images.ts)

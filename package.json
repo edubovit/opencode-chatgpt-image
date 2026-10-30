@@ -2,7 +2,7 @@
   "name": "opencode-chatgpt-image",
   "version": "0.1.0",
   "private": true,
-  "description": "OpenCode V2 image generation using the active Codex subscription login",
+  "description": "OpenCode V2 image generation through ChatGPT subscriptions or the OpenAI API",
   "type": "module",
   "exports": {
     ".": "./index.ts"

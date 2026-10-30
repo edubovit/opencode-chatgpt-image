@@ -50,9 +50,10 @@ async function sessionPath(directory: string, input: string): Promise<{ root: st
   return { root, path };
 }
 
-export async function resolveOutputPath(directory: string, input: string): Promise<string> {
+export async function resolveOutputPath(directory: string, input: string, format = "png"): Promise<string> {
   const { root, path } = await sessionPath(directory, input);
-  if (extname(path).toLowerCase() !== ".png") throw new Error(`Output path must end in .png: ${input}`);
+  const extensions = format === "jpeg" ? [".jpg", ".jpeg"] : [`.${format}`];
+  if (!extensions.includes(extname(path).toLowerCase())) throw new Error(`Output path must end in ${extensions.join(" or ")}: ${input}`);
   let ancestor = dirname(path);
   while (!(await existing(ancestor))) ancestor = dirname(ancestor);
   const canonical = await realpath(ancestor);
@@ -92,7 +93,7 @@ function imageType(bytes: Buffer): string | undefined {
   return undefined;
 }
 
-export async function readReferenceImage(path: string, signal: AbortSignal): Promise<string> {
+export async function readReferenceFile(path: string, signal: AbortSignal, limit = referenceLimit): Promise<{ bytes: Buffer; mime: string }> {
   signal.throwIfAborted();
   const before = await lstat(path, { bigint: true });
   if (!before.isFile()) throw new Error(`Reference image must be a regular file: ${path}`);
@@ -103,37 +104,42 @@ export async function readReferenceImage(path: string, signal: AbortSignal): Pro
     signal.throwIfAborted();
     if (!info.isFile()) throw new Error(`Reference image must be a regular file: ${path}`);
     if (info.dev !== before.dev || info.ino !== before.ino) throw new Error(`Reference image changed before it could be read: ${path}`);
-    if (info.size > referenceLimit) throw new Error(`Reference image exceeds the 10 MiB limit: ${path}`);
+    if (info.size > limit) throw new Error(`Reference image exceeds the ${limit / 1024 / 1024} MiB limit: ${path}`);
     const chunks: Buffer[] = [];
     let size = 0;
     while (true) {
       signal.throwIfAborted();
-      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, referenceLimit + 1 - size));
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, limit + 1 - size));
       const { bytesRead } = await file.read(buffer);
       signal.throwIfAborted();
       if (bytesRead === 0) break;
       size += bytesRead;
-      if (size > referenceLimit) throw new Error(`Reference image exceeds the 10 MiB limit: ${path}`);
+      if (size > limit) throw new Error(`Reference image exceeds the ${limit / 1024 / 1024} MiB limit: ${path}`);
       chunks.push(buffer.subarray(0, bytesRead));
     }
-    if ((await file.stat()).size > referenceLimit) throw new Error(`Reference image exceeds the 10 MiB limit: ${path}`);
+    if ((await file.stat()).size > limit) throw new Error(`Reference image exceeds the ${limit / 1024 / 1024} MiB limit: ${path}`);
     signal.throwIfAborted();
     const bytes = Buffer.concat(chunks, size);
     const type = imageType(bytes);
     if (!type) throw new Error(`Reference image must be a valid PNG, JPEG, or WebP image: ${path}`);
-    return `data:${type};base64,${bytes.toString("base64")}`;
+    return { bytes, mime: type };
   } finally {
     await file.close();
   }
 }
 
-export async function writeImage(directory: string, path: string, bytes: Buffer, signal: AbortSignal): Promise<void> {
+export async function readReferenceImage(path: string, signal: AbortSignal): Promise<string> {
+  const image = await readReferenceFile(path, signal);
+  return `data:${image.mime};base64,${image.bytes.toString("base64")}`;
+}
+
+export async function writeImage(directory: string, path: string, bytes: Buffer, signal: AbortSignal, format = "png"): Promise<void> {
   signal.throwIfAborted();
-  const resolved = await resolveOutputPath(directory, path);
+  const resolved = await resolveOutputPath(directory, path, format);
   signal.throwIfAborted();
   await mkdir(dirname(resolved), { recursive: true });
   signal.throwIfAborted();
-  const target = await resolveOutputPath(directory, resolved);
+  const target = await resolveOutputPath(directory, resolved, format);
   signal.throwIfAborted();
   const file = await open(target, "wx");
   let identity: BigIntStats | undefined;

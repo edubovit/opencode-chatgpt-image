@@ -18,7 +18,7 @@ type ImageInput = {
   background: "opaque" | "transparent"
 }
 
-function waitFor<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+export function waitFor<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
     const abort = () => reject(new DOMException("Image generation cancelled.", "AbortError"))
