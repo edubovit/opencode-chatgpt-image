@@ -4,6 +4,7 @@ import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import { generateImage } from '../src/codex.ts';
 import type { ImageRequest } from '../src/codex.ts';
+import { ImageRequestError } from '../src/image-response.ts';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const INPUT: ImageRequest = { prompt: 'private prompt', background: 'opaque' };
@@ -22,8 +23,10 @@ function call(fetcher: typeof fetch, input = INPUT, signal = new AbortController
 
 function safeError(pattern: RegExp, name?: string) {
   return (error: unknown) => {
-    assert.ok(error instanceof Error);
+    assert.ok(error instanceof ImageRequestError);
     assert.match(error.message, pattern);
+    assert.match(error.message, /not retried/);
+    for (const field of ['category', 'phase', 'outcome'] as const) assert.ok(error.message.includes(error[field]));
     if (name) assert.equal(error.name, name);
     assert.equal(error.cause, undefined);
     for (const secret of ['private-token', 'private-account', 'private prompt', 'private-request-id']) {
@@ -278,4 +281,85 @@ test('limits request memory before serialization and fetch', async () => {
     ...INPUT, prompt: 'a'.repeat(MAX_BODY_BYTES + 1),
   }), safeError(/request exceeds the 48 MiB limit/));
   assert.equal(called, false);
+});
+
+test('returns only validated response metadata while preserving requested and unknown effective model', async () => {
+  const reported = { size: '1536x1024', quality: 'high', background: 'transparent', output_format: 'png' };
+  const usage = { input_tokens: 5, output_tokens: 8, total_tokens: 13, output_tokens_details: { image_tokens: 8 } };
+  const result = await call(async () => Response.json({
+    data: [{ b64_json: PNG.toString('base64'), revised_prompt: SECRET, model: SECRET }],
+    ...reported, usage: { ...usage, account: SECRET, cost: 1.99 }, model: SECRET, request_id: SECRET, safety_identifier: SECRET,
+  }));
+  assert.deepEqual(result, { bytes: PNG, requestedModel: 'gpt-image-2', effectiveModel: null, reported, usage });
+  assert.ok(!JSON.stringify(result).includes('private'));
+});
+
+test('does not fabricate response metadata or return unknown or malformed metadata', async () => {
+  for (const metadata of [{}, { size: SECRET, quality: SECRET, background: SECRET, output_format: SECRET, usage: { account: SECRET, total_tokens: SECRET } }]) {
+    const result = await call(async () => Response.json({ data: [{ b64_json: PNG.toString('base64') }], ...metadata, model: SECRET }));
+    assert.deepEqual(result, { bytes: PNG, requestedModel: 'gpt-image-2', effectiveModel: null });
+  }
+});
+
+test('Codex request validation, missing auth and invalid headers fail locally without dispatch', async () => {
+  let calls = 0;
+  const fetcher: typeof fetch = async () => { calls++; return imageResponse(); };
+  for (const request of [
+    () => call(fetcher, { ...INPUT, images: ['data:image/png;base64,!!!!'] }),
+    () => generateImage(INPUT, { accessToken: `${SECRET}\ninvalid` }, new AbortController().signal, fetcher),
+    () => generateImage(INPUT, { accessToken: ' ' }, new AbortController().signal, fetcher),
+  ]) {
+    await assert.rejects(request, (error: unknown) => {
+      safeError(/valid base64|request failed|access token/)(error);
+      assert.ok(error instanceof ImageRequestError);
+      assert.ok(['invalid_request', 'authentication'].includes(error.category));
+      assert.equal(error.phase, 'local');
+      assert.equal(error.outcome, 'not_submitted');
+      return true;
+    });
+  }
+  assert.equal(calls, 0);
+});
+
+test('Codex failures distinguish rejection from ambiguous dispatch and response failures without retries', async () => {
+  const cases = [
+    { fetcher: async () => { throw new Error(SECRET); }, category: 'network', phase: 'dispatch', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => new Response(SECRET), category: 'invalid_response', phase: 'response', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => new Response(null, { headers: { 'content-length': String(MAX_BODY_BYTES + 1) } }), category: 'response_limit', phase: 'response', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => new Response(new ReadableStream({ pull() { throw new Error(SECRET); } })), category: 'network', phase: 'response', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => Response.json({ error: { code: 'insufficient_quota', message: SECRET } }, { status: 429 }), category: 'quota', phase: 'response', outcome: 'remote_rejected', status: 429 },
+    { fetcher: async () => Response.json({ error: { code: 'rate_limit_exceeded', message: SECRET } }, { status: 429 }), category: 'rate_limit', phase: 'response', outcome: 'remote_rejected', status: 429 },
+    { fetcher: async () => Response.json({ error: { message: SECRET } }, { status: 503 }), category: 'remote_error', phase: 'response', outcome: 'ambiguous', status: 503 },
+  ];
+  for (const { fetcher, category, phase, outcome, status } of cases) {
+    let calls = 0;
+    await assert.rejects(call(async () => { calls++; return fetcher(); }), (error: unknown) => {
+      safeError(/./)(error);
+      assert.ok(error instanceof ImageRequestError);
+      assert.deepEqual({ category: error.category, phase: error.phase, outcome: error.outcome, status: error.status }, { category, phase, outcome, status });
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('Codex cancellation identifies whether dispatch has started', async () => {
+  for (const phase of ['local', 'dispatch', 'response']) {
+    const controller = new AbortController();
+    if (phase === 'local') controller.abort(new Error(SECRET));
+    let calls = 0;
+    await assert.rejects(call(async () => {
+      calls++;
+      controller.abort(new Error(SECRET));
+      if (phase === 'dispatch') throw controller.signal.reason;
+      return imageResponse();
+    }, INPUT, controller.signal), (error: unknown) => {
+      safeError(/cancelled/, 'AbortError')(error);
+      assert.ok(error instanceof ImageRequestError);
+      assert.equal(error.phase, phase);
+      assert.equal(error.outcome, phase === 'local' ? 'not_submitted' : 'ambiguous');
+      return true;
+    });
+    assert.equal(calls, phase === 'local' ? 0 : 1);
+  }
 });

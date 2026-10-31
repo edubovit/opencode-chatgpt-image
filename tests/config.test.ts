@@ -10,7 +10,7 @@ const oldModel = { model: "gpt-image-1.5", quality: "high", size: "1024x1024" }
 const resolve = (overrides: Record<string, unknown> = {}, editing = false) => resolveApiParameters({}, overrides, editing)
 
 test("defaults select ChatGPT without a key and define overridable API defaults", () => {
-  assert.deepEqual(parseConfig(undefined), { mode: "chatgpt", defaults: { ...base, orientation: "auto" } })
+  assert.deepEqual(parseConfig(undefined), { mode: "chatgpt", defaults: { ...base, orientation: "auto" }, allowExternalReferences: true })
   assert.deepEqual(parseConfig({}), parseConfig(undefined))
   assert.deepEqual(resolve(), { parameters: base, format: "png", n: 1 })
 })
@@ -24,6 +24,27 @@ test("API config accepts a resolved key and preserves optional zero values", () 
   assert.equal(resolved.format, "webp")
   assert.equal(resolved.n, 10)
   assert.equal(resolved.parameters.output_compression, 0)
+})
+
+test("external references default to enabled and accept an explicit boolean in either mode", () => {
+  for (const mode of ["chatgpt", "api"]) {
+    for (const allowExternalReferences of [undefined, false, true]) {
+      const config = parseConfig({ mode, apiKey: "synthetic-key", allowExternalReferences })
+      assert.equal(config.allowExternalReferences, allowExternalReferences ?? true)
+      assert.equal(Object.hasOwn(config.defaults, "allowExternalReferences"), false)
+    }
+    for (const allowExternalReferences of [null, 0, 1, "true", "false", {}, []]) {
+      assert.throws(() => parseConfig({ mode, apiKey: "synthetic-key", allowExternalReferences }), /allowExternalReferences must be a boolean/)
+    }
+  }
+})
+
+test("presets and configured output paths are not supported", () => {
+  for (const name of ["preset", "presets", "output_path", "outputPath"]) {
+    assert.throws(() => parseConfig({ [name]: "fixture" }), /Unknown plugin option/)
+    assert.throws(() => parseConfig({ defaults: { [name]: "fixture" } }), /Unknown image parameter/)
+    assert.throws(() => resolve({ [name]: "fixture" }), /Unknown image parameter/)
+  }
 })
 
 test("caller overrides every default without changing config or inputs", () => {
@@ -137,7 +158,7 @@ test("formats and compression enforce compatibility and preserve zero", () => {
 })
 
 test("unknown and transport-level fields are rejected in both defaults and caller overrides", () => {
-  for (const name of ["key", "apiKey", "mode", "baseURL", "stream", "partial_images", "response_format", "prompt", "__proto__", "constructor", "toString"]) {
+  for (const name of ["key", "apiKey", "mode", "allowExternalReferences", "baseURL", "stream", "partial_images", "response_format", "prompt", "__proto__", "constructor", "toString"]) {
     assert.throws(() => resolve({ [name]: "private-credential" }), /Unknown image parameter/)
     assert.throws(() => parseConfig({ defaults: { [name]: "private-credential" } }), /Unknown image parameter/)
     assert.throws(() => resolveApiParameters({ [name]: "private-credential" }, {}, false), /Unknown image parameter/)

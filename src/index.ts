@@ -6,6 +6,7 @@ import { parseConfig, type PluginConfig } from "./config.ts"
 export default Plugin.define({
   id: "opencode-chatgpt-image",
   async setup(ctx) {
+    await ctx.tool.transform(editor => editor.remove("experimental_image_generate"))
     let config: PluginConfig
     try {
       config = parseConfig(ctx.options)
@@ -14,7 +15,7 @@ export default Plugin.define({
       return
     }
     const lifetime = new AbortController()
-    const tool = config.mode === "api" ? createApiImageTool(ctx, lifetime.signal, config) : createImageTool(ctx, lifetime.signal)
+    const tool = config.mode === "api" ? createApiImageTool(ctx, lifetime.signal, config) : createImageTool(ctx, lifetime.signal, undefined, undefined, config.allowExternalReferences)
     await ctx.tool.transform(editor => {
       editor.add(tool)
     })

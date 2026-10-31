@@ -4,7 +4,7 @@ Generate and edit images in OpenCode using either your ChatGPT subscription or t
 
 ## Install
 
-Requires OpenCode V2; tested against 2.1.4. Use Node.js 24+ and npm for this checkout:
+Targets OpenCode 2.2.5. Use Node.js 24+ and npm for this checkout:
 
 ```sh
 npm ci --ignore-scripts
@@ -22,6 +22,8 @@ The repository deliberately contains no `opencode.json`. Register the checkout *
 | `api` | `openai_image` only | Required plugin `apiKey` | Separate OpenAI API charges |
 
 The tools are never registered together. An optional API key in `chatgpt` mode is unused. Neither mode falls back to the other, switches accounts, or automatically retries requests.
+
+While loaded, the plugin removes OpenCode's `experimental_image_generate` tool, including when its own configuration is invalid. Unloading or failing to load the plugin can restore the native tool. To keep it disabled independently, add `"-opencode.tool.image-generate"` to your existing `plugins` array. This does not disable providers, authentication, reading images, or previews, and does not cancel jobs already started.
 
 ### ChatGPT subscription
 
@@ -84,14 +86,20 @@ Callers can pass `null` to clear optional configured `output_compression`, `mode
 
 > Use openai_image to change only the cup color to red, using output/cup.png as a reference. Save it to output/red-cup.png.
 
-Both tools require `prompt` (1–32,000 characters) and `output_path`. Paths must stay inside the session directory, including resolved symbolic links. Existing outputs are never overwritten. Copy outside references into the project first.
+Both tools require `prompt` (1–32,000 characters) and `output_path`. Output paths must stay inside the session directory, including resolved symbolic links. Existing outputs are never overwritten. Generation stays in the foreground and returns image attachments directly; there are no presets or automatic output filenames.
+
+### Reference inputs
+
+References accept local PNG/JPEG/WebP paths or public HTTPS image URLs. URL downloads require `webfetch` permission, enforce byte and time limits, and never forward OpenAI credentials. HTTP, URL credentials, private-network destinations, and unsafe redirects are rejected.
+
+Local references outside the session directory are enabled by default, subject to `external_directory` and `read` permissions. Set `"allowExternalReferences": false` in the plugin's `options` to restrict local inputs to the session directory. This does not permit outside output paths. Masks and markup accept the same source forms, but must be PNG.
 
 ### `chatgpt_image` arguments
 
 | Argument | Meaning |
 | --- | --- |
 | `prompt`, `output_path` | Required. Output must be a new `.png`. Put desired aspect ratio/style in the prompt. |
-| `reference_images` | Up to five PNG/JPEG/WebP files, 10 MiB each. References select editing. |
+| `reference_images` | Up to five local or HTTPS PNG/JPEG/WebP images, 10 MiB each. References select editing. |
 | `background` | `opaque` (default) or `transparent`. |
 
 One PNG per call. Combined encoded request limit: 48 MiB.
@@ -112,7 +120,7 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 | `safety_identifier` | Optional privacy-preserving end-user identifier, at most 128 characters. |
 | `user` | Optional legacy end-user identifier. Prefer `safety_identifier`. |
 | `input_fidelity` | Editing only: `high`/`low` on 1.5, `low` on mini. Rejected for 2/2.5, where support is absent or unverified. |
-| `reference_images` | Up to 16 local PNG/JPEG/WebP files, each less than 50,000,000 bytes. |
+| `reference_images` | Up to 16 local or HTTPS PNG/JPEG/WebP images, each less than 50,000,000 bytes. |
 | `mask` | Optional PNG mask under 4,000,000 bytes; transparent pixels select edit regions in the first reference. |
 | `markup` | Optional transparent PNG annotation overlay for 2.5 edits, under 50,000,000 bytes. Exclusive with `mask`. |
 
@@ -126,9 +134,11 @@ Transport is nonstreaming: the tool returns final images, not partial previews. 
 
 ## Safety and previews
 
-- Prompts and reference images are uploaded to OpenAI. Each tool checks its own permission action plus `read` for inputs and `edit` for outputs.
+- Prompts and reference images are uploaded to OpenAI. Generation approval uses `chatgpt_image` or `openai_image` with the requested model ID as its resource (for example `gpt-image-2.5-sunburst`). Output writes separately require `edit` on each path; inputs require `read` or `webfetch`. Generation rules using `resource: "*"` remain valid; path-specific generation rules must use model IDs instead. Keep path restrictions under `edit`.
 - Requests stop waiting after five minutes or cancellation. Remote work may still complete and incur allowance usage or API charges. Never automatically retry an ambiguous failure.
 - API responses are capped at 256 MiB, decoded images at 32 MiB each. If a later file write fails, already saved images remain and their paths are reported.
+- Results distinguish requested settings from validated provider-reported settings and token usage, when available. Missing usage is unknown, not zero. No dollar charge, subscription balance, or serving-model identity is inferred.
+- Provider failures have sanitized categories and submission outcomes. A rejected request differs from an unknown outcome after submission; neither is automatically retried. Raw provider messages and metadata are not forwarded.
 - Enable **Transcript images** in OpenCode's TUI settings for thumbnails. No separate viewer plugin is needed.
 
 [Development and tests](docs/contributing/README.md) · [MIT license](LICENSE)

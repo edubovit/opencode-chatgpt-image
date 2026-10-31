@@ -5,59 +5,86 @@ import type { Info, ToolContext, ToolEditor } from "@opencode/plugin/promise/too
 import plugin from "../index.ts"
 
 const key = "synthetic-api-key-never-live"
+const native = "experimental_image_generate"
 
 function fixture(options: Context["options"]) {
-  const tools: Info[] = []
+  const transforms = new Set<Parameters<Context["tool"]["transform"]>[0]>()
+  const operations: string[] = []
+  const catalog = new Map<string, Info>()
   let registrations = 0
   const unused = () => { throw new Error("Unexpected host capability access") }
+  const original = [native, "unrelated_tool"].map(name => ({ name, description: name, input: { type: "object" }, execute: unused }))
   const editor: ToolEditor = {
-    add(tool) { tools.push(tool) },
-    list: unused, get: unused, namespace: unused, update: unused, remove: unused,
+    add(tool) { operations.push(`add:${tool.name}`); catalog.set(tool.name, tool) },
+    remove(id) { operations.push(`remove:${id}`); catalog.delete(id) },
+    list: unused, get: unused, namespace: unused, update: unused,
   }
+  const reload = () => {
+    catalog.clear()
+    for (const tool of original) catalog.set(tool.name, tool)
+    for (const transform of transforms) transform(editor)
+  }
+  reload()
   const used = {
     options,
     integration: { connection: { active: unused, resolve: unused } },
     tool: {
       async transform(callback: Parameters<Context["tool"]["transform"]>[0]) {
         registrations++
+        transforms.add(callback)
         callback(editor)
-        return { async dispose() {} }
+        return { async dispose() { transforms.delete(callback); reload() } }
       },
     },
   }
   const ctx = new Proxy(used, {
     get(target, property) {
+      if (property === "options") operations.push("options")
       if (property === "options" || property === "tool") return target[property]
       if (property === "integration" && options.mode !== "api") return target.integration
       return unused()
     },
   }) as unknown as Context
-  return { tools, ctx, get registrations() { return registrations } }
+  return {
+    ctx, catalog, operations, reload,
+    disposeScope() { transforms.clear(); reload() },
+    get tools() { return [...catalog.values()].filter(tool => !original.some(item => item.name === tool.name)) },
+    get registrations() { return registrations },
+  }
 }
 
-for (const options of [{}, { apiKey: key }, { mode: "chatgpt", apiKey: key }]) {
+for (const options of [{}, { apiKey: key }, { mode: "chatgpt", apiKey: key }, { allowExternalReferences: true }, { allowExternalReferences: false }]) {
   test(`default/chatgpt registers only chatgpt_image (${JSON.stringify(Object.keys(options))})`, async () => {
     const f = fixture(options)
     const cleanup = await plugin.setup(f.ctx)
-    assert.equal(f.registrations, 1)
+    assert.equal(f.registrations, 2)
+    assert.deepEqual(f.operations.slice(0, 2), [`remove:${native}`, "options"])
+    assert.equal(f.catalog.has(native), false)
+    assert.equal(f.catalog.has("unrelated_tool"), true)
     assert.deepEqual(f.tools.map(tool => tool.name), ["chatgpt_image"])
     assert.equal(JSON.stringify(f.tools).includes(key), false)
-    const schema = f.tools[0]!.input as { properties: Record<string, { maxItems?: number }> }
+    const schema = f.tools[0]!.input as { properties: Record<string, { maxItems?: number }>; required: string[] }
     assert.equal(schema.properties.reference_images?.maxItems, 5)
     assert.equal(Object.hasOwn(schema.properties, "model"), false)
+    assert.equal(Object.hasOwn(schema.properties, "allowExternalReferences"), false)
+    assert.deepEqual(schema.required, ["prompt", "output_path"])
     await cleanup?.()
   })
 }
 
 test("API mode registers only openai_image without accessing OAuth or another host capability", async () => {
-  const f = fixture({ mode: "api", apiKey: key })
+  const f = fixture({ mode: "api", apiKey: key, allowExternalReferences: true })
   const cleanup = await plugin.setup(f.ctx)
-  assert.equal(f.registrations, 1)
+  assert.equal(f.registrations, 2)
+  assert.deepEqual(f.operations.slice(0, 2), [`remove:${native}`, "options"])
+  assert.equal(f.catalog.has(native), false)
+  assert.equal(f.catalog.has("unrelated_tool"), true)
   assert.deepEqual(f.tools.map(tool => tool.name), ["openai_image"])
   assert.equal(JSON.stringify(f.tools).includes(key), false)
-  const schema = f.tools[0]!.input as { properties: Record<string, unknown>; additionalProperties: boolean }
+  const schema = f.tools[0]!.input as { properties: Record<string, unknown>; additionalProperties: boolean; required: string[] }
   assert.equal(schema.additionalProperties, false)
-  for (const field of ["mode", "apiKey", "endpoint", "baseURL", "stream"]) assert.equal(Object.hasOwn(schema.properties, field), false)
+  assert.deepEqual(schema.required, ["prompt", "output_path"])
+  for (const field of ["mode", "apiKey", "endpoint", "baseURL", "stream", "allowExternalReferences", "preset"]) assert.equal(Object.hasOwn(schema.properties, field), false)
   await cleanup?.()
 })
 
@@ -83,15 +110,40 @@ for (const options of [
   { mode: "api", apiKey: key, defaults: { output_format: "gif" } },
   { mode: "api", apiKey: key, defaults: { stream: true } },
   { mode: "api", apiKey: key, endpoint: "https://example.invalid" },
+  { mode: "api", apiKey: key, allowExternalReferences: "true" },
+  { mode: "chatgpt", allowExternalReferences: null },
+  { presets: { poster: { size: "3840x2160" } } },
 ]) {
-  test(`invalid plugin options activate inertly so the host cannot restore stale tools (${JSON.stringify(options).replaceAll(key, "[fake-key]")})`, async t => {
+  test(`invalid plugin options suppress native tools before validation without stale-tool fallback (${JSON.stringify(options).replaceAll(key, "[fake-key]")})`, async t => {
     const f = fixture(options)
     const warnings = t.mock.method(console, "warn", () => {})
     assert.equal(await plugin.setup(f.ctx), undefined)
-    assert.equal(f.registrations, 0)
+    assert.equal(f.registrations, 1)
+    assert.deepEqual(f.operations, [`remove:${native}`, "options"])
+    assert.equal(f.catalog.has(native), false)
+    assert.equal(f.catalog.has("unrelated_tool"), true)
     assert.deepEqual(f.tools, [])
     assert.equal(warnings.mock.callCount(), 1)
     assert.deepEqual(warnings.mock.calls[0]?.arguments, ["[opencode-chatgpt-image] Invalid configuration; image tools disabled. Check mode, apiKey and defaults."])
     assert.equal(JSON.stringify(warnings.mock.calls[0]?.arguments).includes(key), false)
+  })
+}
+
+for (const options of [{}, { mode: "api", apiKey: key }, { mode: "api" }]) {
+  test(`tool transforms replay suppression and remain owned by the plugin scope (${options.mode ?? "default"}, key=${"apiKey" in options})`, async t => {
+    t.mock.method(console, "warn", () => {})
+    const f = fixture(options)
+    assert.equal(f.catalog.has(native), true)
+    const cleanup = await plugin.setup(f.ctx)
+    const selected = f.tools.map(tool => tool.name)
+    for (let i = 0; i < 3; i++) {
+      f.reload()
+      assert.equal(f.catalog.has(native), false)
+      assert.equal(f.catalog.has("unrelated_tool"), true)
+      assert.deepEqual(f.tools.map(tool => tool.name), selected)
+    }
+    await cleanup?.()
+    f.disposeScope()
+    assert.deepEqual([...f.catalog.keys()], [native, "unrelated_tool"])
   })
 }

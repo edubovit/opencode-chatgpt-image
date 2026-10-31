@@ -40,13 +40,13 @@ async function existing(path: string): Promise<BigIntStats | undefined> {
   }
 }
 
-async function sessionPath(directory: string, input: string): Promise<{ root: string; path: string }> {
+async function sessionPath(directory: string, input: string, allowExternalReferences = false): Promise<{ root: string; path: string }> {
   const value = validateInput(input);
   const base = resolve(directory);
   const root = await realpath(base);
   if (!(await stat(root)).isDirectory()) throw new Error(`Session directory is not a directory: ${directory}`);
   const path = resolve(base, value);
-  if (!within(base, path)) assertWithin(root, path);
+  if (!allowExternalReferences && !within(base, path)) assertWithin(root, path);
   return { root, path };
 }
 
@@ -65,15 +65,16 @@ export async function resolveOutputPath(directory: string, input: string, format
   return target;
 }
 
-export async function resolveReferencePath(directory: string, input: string): Promise<string> {
-  const { root, path } = await sessionPath(directory, input);
+export async function resolveReferencePath(directory: string, input: string, allowExternalReferences = false): Promise<string> {
+  if (/^[/\\]{2}/.test(input)) throw new Error("Network reference paths are not supported");
+  const { root, path } = await sessionPath(directory, input, allowExternalReferences);
   const canonical = await realpath(path);
-  assertWithin(root, canonical);
+  if (!allowExternalReferences) assertWithin(root, canonical);
   if (!(await stat(canonical)).isFile()) throw new Error(`Reference image must be a regular file: ${path}`);
   return canonical;
 }
 
-function imageType(bytes: Buffer): string | undefined {
+export function imageType(bytes: Buffer): string | undefined {
   if (bytes.length >= 57 && bytes.subarray(0, 8).equals(pngSignature) &&
       bytes.readUInt32BE(8) === 13 && bytes.toString("latin1", 12, 16) === "IHDR" &&
       bytes.readUInt32BE(16) > 0 && bytes.readUInt32BE(20) > 0 &&
@@ -93,10 +94,13 @@ function imageType(bytes: Buffer): string | undefined {
   return undefined;
 }
 
-export async function readReferenceFile(path: string, signal: AbortSignal, limit = referenceLimit): Promise<{ bytes: Buffer; mime: string }> {
+export async function readReferenceFile(path: string, signal: AbortSignal, limit = referenceLimit, expectedCanonical?: string): Promise<{ bytes: Buffer; mime: string }> {
   signal.throwIfAborted();
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Reference image byte limit must be a positive safe integer");
   const before = await lstat(path, { bigint: true });
   if (!before.isFile()) throw new Error(`Reference image must be a regular file: ${path}`);
+  const canonical = await realpath(path);
+  if (expectedCanonical !== undefined && canonical !== expectedCanonical) throw new Error("Reference image path changed after permission approval");
   signal.throwIfAborted();
   const file = await open(path, "r");
   try {
@@ -104,6 +108,7 @@ export async function readReferenceFile(path: string, signal: AbortSignal, limit
     signal.throwIfAborted();
     if (!info.isFile()) throw new Error(`Reference image must be a regular file: ${path}`);
     if (info.dev !== before.dev || info.ino !== before.ino) throw new Error(`Reference image changed before it could be read: ${path}`);
+    if (await realpath(path) !== canonical) throw new Error("Reference image path changed before it could be read");
     if (info.size > limit) throw new Error(`Reference image exceeds the ${limit / 1024 / 1024} MiB limit: ${path}`);
     const chunks: Buffer[] = [];
     let size = 0;

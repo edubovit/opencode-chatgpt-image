@@ -52,8 +52,8 @@ async function fixture(t: TestContext) {
     permission(value: typeof permission) { permission = value },
     credential(value: typeof resolvedCredential) { resolvedCredential = value },
     resolveCredential(value: typeof resolveCredential) { resolveCredential = value },
-    run(input: unknown = { prompt: "A blue circle", output_path: "output/new.png" }, timeoutMs = 1000) {
-      return createImageTool(ctx, lifetime.signal, timeoutMs, (url, init) => fetcher(url, init)).execute(input, call)
+    run(input: unknown = { prompt: "A blue circle", output_path: "output/new.png" }, timeoutMs = 1000, allowExternalReferences = true) {
+      return createImageTool(ctx, lifetime.signal, timeoutMs, (url, init) => fetcher(url, init), allowExternalReferences).execute(input, call)
     },
   }
 }
@@ -76,13 +76,31 @@ test("reference reads are authorized and uploaded for editing", async t => {
   await writeFile(join(f.directory, "reference.png"), png)
   f.fetch(async (url, init) => {
     assert.match(String(url), /\/images\/edits$/)
-    assert.deepEqual(f.permissions, ["chatgpt_image", "read", "edit"])
+    assert.deepEqual(f.permissions, ["chatgpt_image", "edit", "read"])
     const request = JSON.parse(String(init?.body))
     assert.equal(request.images[0].image_url, `data:image/png;base64,${png.toString("base64")}`)
     assert.equal(request.background, "transparent")
     return Response.json({ data: [{ b64_json: png.toString("base64") }] })
   })
   await f.run({ prompt: "Make it transparent", output_path: "edit.png", reference_images: ["reference.png"], background: "transparent" })
+})
+
+test("subscription external references default to enabled with separate generation and output permissions", async t => {
+  const f = await fixture(t)
+  const outside = await mkdtemp(join(tmpdir(), "chatgpt-external-reference-"))
+  t.after(() => rm(outside, { recursive: true, force: true }))
+  const reference = join(outside, "image.png")
+  await writeFile(reference, png)
+  const input = { prompt: "Edit", output_path: "new.png", reference_images: [reference] }
+  await assert.rejects(f.run(input, 1000, false))
+  assert.equal(f.credentialReads, 0)
+  const permissions: Parameters<ImageContext["permission"]["assert"]>[0][] = []
+  f.permission(async request => { permissions.push(request) })
+  await f.run(input)
+  assert.deepEqual(permissions.map(request => request.action), ["chatgpt_image", "edit", "external_directory", "read"])
+  assert.deepEqual(permissions[0]?.resources, ["gpt-image-2"])
+  assert.deepEqual(permissions[1]?.resources, [join(f.directory, "new.png")])
+  assert.equal(f.requests, 1)
 })
 
 for (const action of ["chatgpt_image", "edit", "read"]) {

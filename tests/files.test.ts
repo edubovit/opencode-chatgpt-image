@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
-import { readReferenceImage, resolveOutputPath, resolveReferencePath, writeImage } from "../src/files.ts";
+import { readReferenceFile, readReferenceImage, resolveOutputPath, resolveReferencePath, writeImage } from "../src/files.ts";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXY/jPwPAfAAUAAf+mXJtdAAAAAElFTkSuQmCC", "base64");
 const jpeg = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD50ooor8MP9Uz/2Q==", "base64");
@@ -172,6 +172,51 @@ test("reference images must be regular supported image files", async (t) => {
       return true;
     });
   }
+});
+
+test("external reference opt-in does not relax output confinement", async t => {
+  const { root, outside } = await workspace(t);
+  const path = join(outside, "image.png");
+  await writeFile(path, png);
+  assert.equal(await resolveReferencePath(root, path, true), path);
+  await assert.rejects(resolveReferencePath(root, path), /within the session directory/);
+  await assert.rejects(resolveOutputPath(root, join(outside, "new.png")), /within the session directory/);
+  await assert.rejects(writeImage(root, join(outside, "new.png"), png, signal()), /within the session directory/);
+});
+
+test("canonical reference reads reject a changed ancestor before opening", async t => {
+  const { root, outside } = await workspace(t);
+  const folder = join(root, "folder");
+  await mkdir(folder);
+  const path = join(folder, "image.png");
+  await writeFile(path, png);
+  await writeFile(join(outside, "image.png"), png);
+  await rename(folder, join(root, "old-folder"));
+  if (!(await link(t, outside, folder))) return;
+  await assert.rejects(readReferenceFile(path, signal(), 10 * 1024 * 1024, path), /path changed/);
+});
+
+test("reference reads reject an ancestor replaced after opening and before reading", async t => {
+  const { root, outside } = await workspace(t);
+  const folder = join(root, "folder");
+  const actual = join(root, "actual");
+  await mkdir(actual);
+  if (!(await link(t, actual, folder))) return;
+  const path = join(folder, "image.png");
+  await writeFile(path, png);
+  await writeFile(join(outside, "image.png"), png);
+  if (!(await link(t, outside, join(root, "probe")))) return;
+  const prototype = await filePrototype(root);
+  const original = prototype.stat;
+  t.mock.method(prototype, "stat", async function (this: FileHandle, ...args: unknown[]) {
+    const result = await Reflect.apply(original, this, args);
+    await rm(folder, { recursive: true });
+    await link(t, outside, folder);
+    return result;
+  });
+  const read = t.mock.method(prototype, "read", async () => { throw new Error("Should not read a changed path"); });
+  await assert.rejects(readReferenceFile(path, signal()), /path changed/);
+  assert.equal(read.mock.callCount(), 0);
 });
 
 test("oversized reference files are rejected before reading image data", async (t) => {

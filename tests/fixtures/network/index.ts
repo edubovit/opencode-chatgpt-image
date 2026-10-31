@@ -70,12 +70,32 @@ export default Plugin.define({
             cancel() { return notify({ operation: 'cancelled' }); },
           }));
         }
-        return Response.json({ data: [{ b64_json: PNG }] });
+        return Response.json({
+          data: [{ b64_json: PNG }], size: '1x1', quality: 'low', output_format: 'png', background: edit ? 'transparent' : 'opaque',
+          model: 'synthetic-unverified-model', api_key: token,
+          usage: {
+            input_tokens: 7, output_tokens: 11, total_tokens: 18,
+            input_tokens_details: { text_tokens: 7, image_tokens: 0 }, output_tokens_details: { image_tokens: 11 },
+            untrusted: token,
+          },
+        });
       }
       if (new URL(url).origin !== origin) throw new Error('Synthetic fixture blocked a non-fixture network request.');
       return original(input, { ...init, redirect: 'error' });
     };
     globalThis.fetch = shim;
+    await ctx.session.hook('prompt', async event => {
+      if (event.prompt.text !== 'Synthetic catalog-reload fixture.') return;
+      await ctx.model.reload();
+      const models = await ctx.model.list({ types: ['image'] });
+      await ctx.tool.reload();
+      const tools = await ctx.tool.list();
+      await notify({
+        operation: 'catalog-reload',
+        imageModelAvailable: models.data.some(model => model.providerID === 'image-smoke-fixture' && model.id === 'synthetic-image' && model.type === 'image'),
+        tools: tools.map(tool => tool.id).filter(name => ['experimental_image_generate', 'chatgpt_image', 'openai_image'].includes(name)).sort(),
+      });
+    });
     await ctx.session.hook('title', event => { event.result = 'Synthetic image smoke'; });
     await ctx.session.hook('http.request', event => {
       event.request.headers.set('x-fixture-session', event.sessionID);

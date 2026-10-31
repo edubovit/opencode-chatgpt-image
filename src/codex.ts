@@ -1,5 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
+import { ImageRequestError, imageCancellation, imageResponseMetadata, imageStatusError } from './image-response.ts';
+import type { ImageErrorCategory, ImageErrorPhase, ImageResponseMetadata } from './image-response.ts';
 
 export type CodexAuth = { accessToken: string; accountId?: string };
 
@@ -13,25 +15,21 @@ export type ImageResult = {
   bytes: Buffer;
   requestedModel: string;
   effectiveModel: null;
-};
+} & ImageResponseMetadata;
 
 const MODEL = 'gpt-image-2';
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_BODY_BYTES = 48 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-class ImageError extends Error {}
-
-function cancellation(signal: AbortSignal): DOMException {
-  const timeout = signal.reason instanceof Error && signal.reason.name === 'TimeoutError';
-  return new DOMException(
-    timeout ? 'Image generation timed out.' : 'Image generation was cancelled.',
-    timeout ? 'TimeoutError' : 'AbortError',
-  );
+class ImageError extends ImageRequestError {
+  constructor(message: string, category: ImageErrorCategory = 'invalid_response', phase: ImageErrorPhase = 'response') {
+    super(category, message, { phase, outcome: phase === 'local' ? 'not_submitted' : 'ambiguous' });
+  }
 }
 
-function checkCancellation(signal: AbortSignal): void {
-  if (signal.aborted) throw cancellation(signal);
+function checkCancellation(signal: AbortSignal, phase: ImageErrorPhase = 'response'): void {
+  if (signal.aborted) throw imageCancellation(signal, phase);
 }
 
 function discardBody(response: Response): void {
@@ -42,7 +40,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   checkCancellation(signal);
   if (Number(response.headers.get('content-length')) > MAX_BODY_BYTES) {
     discardBody(response);
-    throw new ImageError('Codex image response exceeds the 48 MiB limit.');
+    throw new ImageError('Codex image response exceeds the 48 MiB limit.', 'response_limit');
   }
   if (!response.body) throw new ImageError('Codex returned no image data.');
 
@@ -60,7 +58,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
         chunk = await reader.read();
       } catch {
         checkCancellation(signal);
-        throw new ImageError('Could not read the Codex image response.');
+        throw new ImageError('Could not read the Codex image response. Check connectivity.', 'network');
       }
       checkCancellation(signal);
       if (chunk.done) {
@@ -69,7 +67,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
       }
       const length = size + chunk.value.byteLength;
       if (length > MAX_BODY_BYTES) {
-        throw new ImageError('Codex image response exceeds the 48 MiB limit.');
+        throw new ImageError('Codex image response exceeds the 48 MiB limit.', 'response_limit');
       }
       if (length > buffer.length) {
         const expanded = Buffer.allocUnsafe(Math.min(MAX_BODY_BYTES, Math.max(length, buffer.length * 2)));
@@ -86,14 +84,14 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   }
 }
 
-function base64Size(value: string): number {
+function base64Size(value: string, phase: ImageErrorPhase = 'response'): number {
   if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
-    throw new ImageError('Codex image data is not valid base64.');
+    throw new ImageError('Codex image data is not valid base64.', phase === 'local' ? 'invalid_request' : 'invalid_response', phase);
   }
   const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
   const tail = value.slice(-4);
   if (Buffer.from(tail, 'base64').toString('base64') !== tail) {
-    throw new ImageError('Codex image data is not valid base64.');
+    throw new ImageError('Codex image data is not valid base64.', phase === 'local' ? 'invalid_request' : 'invalid_response', phase);
   }
   return value.length / 4 * 3 - padding;
 }
@@ -124,7 +122,7 @@ function validatePng(bytes: Buffer): void {
   throw invalid();
 }
 
-function responseImage(body: string): Buffer {
+function responseImage(body: string): ImageResult {
   let value: unknown;
   try {
     value = JSON.parse(body);
@@ -136,19 +134,11 @@ function responseImage(body: string): Buffer {
   const encoded = image && typeof image === 'object' && 'b64_json' in image ? image.b64_json : undefined;
   if (typeof encoded !== 'string' || !encoded) throw new ImageError('Codex returned no image data.');
   if (encoded.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4 || base64Size(encoded) > MAX_IMAGE_BYTES) {
-    throw new ImageError('Codex image exceeds the 32 MiB limit.');
+    throw new ImageError('Codex image exceeds the 32 MiB limit.', 'response_limit');
   }
   const bytes = Buffer.from(encoded, 'base64');
   validatePng(bytes);
-  return bytes;
-}
-
-function statusError(status: number): ImageError {
-  if (status === 401) return new ImageError('Codex authentication expired or was rejected. Sign in to ChatGPT again.');
-  if (status === 403) return new ImageError('Codex image access was denied for this ChatGPT account.');
-  if (status === 429) return new ImageError('Codex image rate or usage limit reached. Try again later.');
-  if (status >= 500) return new ImageError('Codex image service is temporarily unavailable. The request was not retried.');
-  return new ImageError('Codex rejected the image request. The request was not retried.');
+  return { bytes, requestedModel: MODEL, effectiveModel: null, ...imageResponseMetadata(value) };
 }
 
 export async function generateImage(
@@ -157,19 +147,21 @@ export async function generateImage(
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<ImageResult> {
+  let phase: ImageErrorPhase = 'local';
   try {
-    checkCancellation(signal);
+    checkCancellation(signal, phase);
+    if (!auth.accessToken.trim()) throw new ImageError('A ChatGPT access token must be configured. Sign in to ChatGPT again.', 'authentication', phase);
     const references = input.images ?? [];
     let requestSize = Buffer.byteLength(input.prompt);
     for (const image of references) {
       requestSize += Buffer.byteLength(image);
-      if (requestSize > MAX_BODY_BYTES) throw new ImageError('Image request exceeds the 48 MiB limit.');
+      if (requestSize > MAX_BODY_BYTES) throw new ImageError('Image request exceeds the 48 MiB limit.', 'invalid_request', phase);
       if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(image)) {
-        throw new ImageError('Reference images must be base64 image data URLs.');
+        throw new ImageError('Reference images must be base64 image data URLs.', 'invalid_request', phase);
       }
-      base64Size(image.slice(image.indexOf(',') + 1));
+      base64Size(image.slice(image.indexOf(',') + 1), phase);
     }
-    if (requestSize > MAX_BODY_BYTES) throw new ImageError('Image request exceeds the 48 MiB limit.');
+    if (requestSize > MAX_BODY_BYTES) throw new ImageError('Image request exceeds the 48 MiB limit.', 'invalid_request', phase);
     const body = JSON.stringify({
       model: MODEL,
       quality: 'auto',
@@ -178,7 +170,7 @@ export async function generateImage(
       background: input.background,
       ...(references.length ? { images: references.map(image_url => ({ image_url })) } : {}),
     });
-    if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw new ImageError('Image request exceeds the 48 MiB limit.');
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw new ImageError('Image request exceeds the 48 MiB limit.', 'invalid_request', phase);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${auth.accessToken}`,
       'Content-Type': 'application/json',
@@ -186,31 +178,34 @@ export async function generateImage(
       'x-codex-image-turn-id': randomUUID(),
     };
     if (auth.accountId) headers['ChatGPT-Account-Id'] = auth.accountId;
+    const requestHeaders = new Headers(headers);
+    checkCancellation(signal, phase);
     const endpoint = references.length ? 'edits' : 'generations';
+    phase = 'dispatch';
     const response = await fetcher(`https://chatgpt.com/backend-api/codex/images/${endpoint}`, {
       method: 'POST',
-      headers,
+      headers: requestHeaders,
       body,
       signal,
       redirect: 'error',
     });
+    phase = 'response';
     if (signal.aborted) {
       discardBody(response);
-      throw cancellation(signal);
+      throw imageCancellation(signal, phase);
     }
     if (!response.ok) {
-      discardBody(response);
-      throw statusError(response.status);
+      throw await imageStatusError('Codex', response, signal);
     }
-    const bytes = responseImage(await readBody(response, signal));
+    const result = responseImage(await readBody(response, signal));
     checkCancellation(signal);
-    return { bytes, requestedModel: MODEL, effectiveModel: null };
+    return result;
   } catch (error) {
-    checkCancellation(signal);
-    if (error instanceof ImageError) throw error;
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new DOMException('Image generation was cancelled.', 'AbortError');
+    checkCancellation(signal, phase);
+    if (error instanceof ImageRequestError) throw error;
+    if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+      throw new ImageError(error.name === 'TimeoutError' ? 'Image generation timed out.' : 'Image generation was cancelled.', error.name === 'TimeoutError' ? 'timeout' : 'cancelled', phase);
     }
-    throw new Error('Codex image request failed. Check connectivity. The request was not retried.');
+    throw new ImageError(phase === 'local' ? 'Codex image request failed. Check the request parameters and credentials.' : 'Codex image request failed. Check connectivity.', phase === 'local' ? 'invalid_request' : 'network', phase);
   }
 }

@@ -21,7 +21,7 @@
     "smoke:live": "node scripts/live-smoke.ts"
   },
   "dependencies": {
-    "@opencode/plugin": "2.1.4"
+    "@opencode/plugin": "2.2.5"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

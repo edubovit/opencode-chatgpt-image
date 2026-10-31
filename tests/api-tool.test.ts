@@ -1,4 +1,9 @@
 import assert from "node:assert/strict"
+import dns from "node:dns/promises"
+import https, { type RequestOptions } from "node:https"
+import type { IncomingMessage } from "node:http"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
 import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import { join } from "node:path"
@@ -15,10 +20,10 @@ const jpeg = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQ
 const webp = Buffer.from("UklGRhwAAABXRUJQVlA4TA8AAAAvAAAAAAcQ/Y/+ByKi/wEA", "base64")
 const defaultInput = { prompt: "A synthetic blue circle", output_path: "output/new.png" }
 
-async function fixture(t: TestContext, defaults: Record<string, unknown> = {}) {
+async function fixture(t: TestContext, defaults: Record<string, unknown> = {}, options: { allowExternalReferences?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openai-image-tool-"))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  const config = parseConfig({ mode: "api", apiKey: key, defaults })
+  const config = parseConfig({ mode: "api", apiKey: key, defaults, ...options })
   assert.equal(config.mode, "api")
   if (config.mode !== "api") throw new Error("Expected API fixture")
   const permissions: Parameters<ImageContext["permission"]["assert"]>[0][] = []
@@ -68,6 +73,8 @@ test("API defaults use paid generation without host OAuth or exposing the key", 
   f.fetch(async (url, init) => {
     assert.equal(String(url), "https://api.openai.com/v1/images/generations")
     assert.deepEqual(f.permissions.map(input => input.action), ["openai_image", "edit"])
+    assert.deepEqual(f.permissions[0]?.resources, ["gpt-image-2.5-sunburst"])
+    assert.deepEqual(f.permissions[1]?.resources, [join(f.directory, defaultInput.output_path)])
     assert.deepEqual(JSON.parse(String(init?.body)), {
       prompt: defaultInput.prompt, model: "gpt-image-2.5-sunburst", quality: "max", size: "3840x2160",
       output_format: "png", n: 1, background: "auto",
@@ -106,6 +113,65 @@ test("reference ancestors are revalidated after permission approval before uploa
   await assert.rejects(f.run({ ...defaultInput, reference_images: ["refs/image.png"] }))
   assert.equal(f.requests, 0)
   if (unsupported) t.skip("Directory link creation unavailable")
+})
+
+test("external references are enabled by default but can be disabled without allowing external writes", async t => {
+  const outside = await mkdtemp(join(tmpdir(), "image-external-input-"))
+  t.after(() => rm(outside, { recursive: true, force: true }))
+  const reference = join(outside, "source.png")
+  await writeFile(reference, png)
+  const blocked = await fixture(t, {}, { allowExternalReferences: false })
+  await assert.rejects(blocked.run({ ...defaultInput, reference_images: [reference] }))
+  assert.equal(blocked.requests, 0)
+  const f = await fixture(t)
+  await f.run({ ...defaultInput, reference_images: [reference] })
+  assert.deepEqual(f.permissions.map(input => input.action), ["openai_image", "edit", "external_directory", "read"])
+  assert.deepEqual(f.permissions.at(-1)?.resources, [reference])
+  assert.equal(f.requests, 1)
+  await assert.rejects(f.run({ prompt: "Test", output_path: join(outside, "new.png") }))
+  assert.equal(f.requests, 1)
+})
+
+test("reported settings and request usage stay distinct from requested settings", async t => {
+  const f = await fixture(t)
+  f.fetch(async () => Response.json({
+    data: [{ b64_json: png.toString("base64") }], size: "1024x1024", quality: "high", output_format: "png",
+    usage: { input_tokens: 9, output_tokens: 20, total_tokens: 29, secret: key }, model: key,
+  }))
+  const result = await f.run()
+  assert.equal(result.metadata?.size, "3840x2160")
+  assert.deepEqual(result.metadata?.reported, { size: "1024x1024", quality: "high", output_format: "png" })
+  assert.deepEqual(result.metadata?.usage, { input_tokens: 9, output_tokens: 20, total_tokens: 29 })
+  assert.equal(JSON.stringify(result).includes(key), false)
+})
+
+test("HTTPS references and masks are downloaded without API credentials and uploaded as multipart bytes", async t => {
+  const f = await fixture(t)
+  const sources = ["https://images.example.com/reference.png", "https://images.example.com/mask.png"]
+  const downloads: string[] = []
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.215.14", family: 4 }])
+  t.mock.method(https, "request", (url: URL, options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+    downloads.push(url.href)
+    assert.equal(JSON.stringify(options).includes(key), false)
+    assert.deepEqual(f.permissions.at(-1)?.resources, [url.href])
+    assert.equal(f.permissions.at(-1)?.action, "webfetch")
+    return Object.assign(new EventEmitter(), { end() {
+      const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} })
+      queueMicrotask(() => { callback(response as unknown as IncomingMessage); response.end(png) })
+    } })
+  })
+  f.fetch(async (_, init) => {
+    assert.ok(init?.body instanceof FormData)
+    for (const field of ["image[]", "mask"]) {
+      const file: FormDataEntryValue | null = init.body.get(field)
+      assert.ok(file instanceof File)
+      assert.deepEqual(Buffer.from(await file.arrayBuffer()), png)
+    }
+    return Response.json({ data: [{ b64_json: png.toString("base64") }] })
+  })
+  await f.run({ ...defaultInput, reference_images: [sources[0]], mask: sources[1] })
+  assert.deepEqual(downloads, sources)
+  assert.equal(f.requests, 1)
 })
 
 test("caller parameters override configured defaults and n images get distinct authorized paths", async t => {
@@ -160,8 +226,8 @@ for (const overlay of ["mask", "markup"] as const) {
     await writeFile(join(f.directory, "overlay.png"), png)
     f.fetch(async (url, init) => {
       assert.equal(String(url), "https://api.openai.com/v1/images/edits")
-      assert.deepEqual(f.permissions.map(input => input.action), ["openai_image", "read", "edit"])
-      assert.deepEqual(f.permissions[1]?.resources, ["reference.png", "overlay.png"].map(name => join(f.directory, name)))
+      assert.deepEqual(f.permissions.map(input => input.action), ["openai_image", "edit", "read", "read"])
+      assert.deepEqual(f.permissions.filter(input => input.action === "read").flatMap(input => input.resources), ["reference.png", "overlay.png"].map(name => join(f.directory, name)))
       assert.ok(init?.body instanceof FormData)
       const image = init.body.get("image[]")
       const mask = init.body.get(overlay)
@@ -180,7 +246,7 @@ for (const overlay of ["mask", "markup"] as const) {
   })
 }
 
-test("accepts sixteen references and reads their bytes only after every permission", async t => {
+test("accepts sixteen references and authorizes each read after generation and output permissions", async t => {
   const f = await fixture(t)
   await writeFile(join(f.directory, "reference.png"), png)
   const file = await open(join(f.directory, "reference.png"), "r")
@@ -188,7 +254,9 @@ test("accepts sixteen references and reads their bytes only after every permissi
   await file.close()
   const read = prototype.read
   const spy = t.mock.method(prototype, "read", async function (this: FileHandle, ...args: unknown[]) {
-    assert.deepEqual(f.permissions.map(input => input.action), ["openai_image", "read", "edit"])
+    assert.deepEqual(f.permissions.slice(0, 2).map(input => input.action), ["openai_image", "edit"])
+    assert.ok(f.permissions.slice(2).every(input => input.action === "read"))
+    assert.deepEqual(f.permissions.at(-1)?.resources, [join(f.directory, "reference.png")])
     return Reflect.apply(read, this, args)
   })
   f.fetch(async (_, init) => {

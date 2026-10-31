@@ -4,6 +4,7 @@ import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import { generateApiImages } from '../src/openai.ts';
 import type { ImageUpload } from '../src/openai.ts';
+import { ImageRequestError } from '../src/image-response.ts';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const PNG2 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXY/jPwPAfAAUAAf+mXJtdAAAAAElFTkSuQmCC', 'base64');
@@ -38,9 +39,10 @@ function call(fetcher: typeof fetch, parameters: Parameters = INPUT, signal = ne
 
 function safeError(pattern: RegExp, name?: string) {
   return (error: unknown) => {
-    assert.ok(error instanceof Error);
+    assert.ok(error instanceof ImageRequestError);
     assert.match(error.message, pattern);
     assert.match(error.message, /not retried/);
+    for (const field of ['category', 'phase', 'outcome'] as const) assert.ok(error.message.includes(error[field]));
     if (name) assert.equal(error.name, name);
     assert.equal(error.cause, undefined);
     for (const secret of ['private-key', 'private-account', 'private prompt', 'private-request-id']) {
@@ -444,5 +446,87 @@ test('rejects unsupported output formats and impossible counts before fetching',
     let called = false;
     await assert.rejects(call(async () => { called = true; return imageResponse(); }, parameters), safeError(/format must be|count must be/));
     assert.equal(called, false);
+  }
+});
+
+test('returns response-level reported settings and aggregate usage on the first image only', async () => {
+  const reported = { size: '1024x1024', quality: 'high', background: 'opaque', output_format: 'png' };
+  const usage = { input_tokens: 4, output_tokens: 8, total_tokens: 12, input_tokens_details: { text_tokens: 4, image_tokens: 0 } };
+  const result = await call(async () => Response.json({
+    data: [PNG, PNG2].map(bytes => ({ b64_json: bytes.toString('base64'), model: SECRET, usage: { input_tokens: 999 }, size: SECRET })),
+    ...reported, usage: { ...usage, account: SECRET, cost: 1.99 }, model: SECRET, effective_model: SECRET, safety_identifier: SECRET,
+  }), { ...INPUT, n: 2 });
+  assert.deepEqual(result, [
+    { bytes: PNG, mime: 'image/png', reported, usage },
+    { bytes: PNG2, mime: 'image/png' },
+  ]);
+  assert.ok(!JSON.stringify(result).includes('private'));
+});
+
+test('metadata is not fabricated from API request settings when the response omits it', async () => {
+  const result = await call(async () => imageResponse());
+  assert.equal(result[0]?.reported, undefined);
+  assert.equal(result[0]?.usage, undefined);
+});
+
+test('API validation and header failures are local/not_submitted without calling fetch', async () => {
+  let calls = 0;
+  const fetcher: typeof fetch = async () => { calls++; return imageResponse(); };
+  for (const request of [
+    () => call(fetcher, { ...INPUT, n: 0 }),
+    () => generateApiImages(INPUT, [], {}, `${SECRET}\ninvalid`, new AbortController().signal, fetcher),
+  ]) {
+    await assert.rejects(request, (error: unknown) => {
+      safeError(/count must be|request failed/)(error);
+      assert.ok(error instanceof ImageRequestError);
+      assert.equal(error.category, 'invalid_request');
+      assert.equal(error.phase, 'local');
+      assert.equal(error.outcome, 'not_submitted');
+      return true;
+    });
+  }
+  assert.equal(calls, 0);
+});
+
+test('API failures distinguish rejection from ambiguous dispatch or response failures without retries', async () => {
+  const cases = [
+    { fetcher: async () => { throw new Error(SECRET); }, category: 'network', phase: 'dispatch', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => new Response(SECRET), category: 'invalid_response', phase: 'response', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => new Response(null, { headers: { 'content-length': String(MAX_BODY_BYTES + 1) } }), category: 'response_limit', phase: 'response', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => new Response(new ReadableStream({ pull() { throw new Error(SECRET); } })), category: 'network', phase: 'response', outcome: 'ambiguous', status: undefined },
+    { fetcher: async () => Response.json({ error: { code: 'insufficient_quota', message: SECRET } }, { status: 429 }), category: 'quota', phase: 'response', outcome: 'remote_rejected', status: 429 },
+    { fetcher: async () => Response.json({ error: { code: 'content_policy_violation', message: SECRET } }, { status: 400 }), category: 'content_filter', phase: 'response', outcome: 'remote_rejected', status: 400 },
+    { fetcher: async () => Response.json({ error: { message: SECRET } }, { status: 503 }), category: 'remote_error', phase: 'response', outcome: 'ambiguous', status: 503 },
+  ];
+  for (const { fetcher, category, phase, outcome, status } of cases) {
+    let calls = 0;
+    await assert.rejects(call(async () => { calls++; return fetcher(); }), (error: unknown) => {
+      safeError(/./)(error);
+      assert.ok(error instanceof ImageRequestError);
+      assert.deepEqual({ category: error.category, phase: error.phase, outcome: error.outcome, status: error.status }, { category, phase, outcome, status });
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('API cancellation identifies whether dispatch has started', async () => {
+  for (const phase of ['local', 'dispatch', 'response']) {
+    const controller = new AbortController();
+    if (phase === 'local') controller.abort(new Error(SECRET));
+    let calls = 0;
+    await assert.rejects(call(async () => {
+      calls++;
+      controller.abort(new Error(SECRET));
+      if (phase === 'dispatch') throw controller.signal.reason;
+      return imageResponse();
+    }, INPUT, controller.signal), (error: unknown) => {
+      safeError(/cancelled/, 'AbortError')(error);
+      assert.ok(error instanceof ImageRequestError);
+      assert.equal(error.phase, phase);
+      assert.equal(error.outcome, phase === 'local' ? 'not_submitted' : 'ambiguous');
+      return true;
+    });
+    assert.equal(calls, phase === 'local' ? 0 : 1);
   }
 });

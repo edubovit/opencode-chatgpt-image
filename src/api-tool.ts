@@ -2,8 +2,10 @@ import { basename, extname } from "node:path"
 import type { Info } from "@opencode/plugin/promise/tool"
 import { apiParameterProperties, clearableApiParameters, resolveApiParameters, type PluginConfig } from "./config.ts"
 import { generateApiImages, type ImageUpload } from "./openai.ts"
-import { readReferenceFile, resolveOutputPath, resolveReferencePath, writeImage } from "./files.ts"
+import { resolveOutputPath, writeImage } from "./files.ts"
+import { prepareReference, readReference, type Reference } from "./references.ts"
 import { waitFor, type ImageContext } from "./tool.ts"
+import { ImageRequestError } from "./image-response.ts"
 
 type ApiConfig = Extract<PluginConfig, { mode: "api" }>
 const fileFields = ["prompt", "output_path", "reference_images", "mask", "markup"]
@@ -14,9 +16,9 @@ function parseInput(value: unknown) {
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 32_000) throw new Error("prompt must contain 1–32000 characters.")
   if (typeof input.output_path !== "string" || !input.output_path.trim()) throw new Error("output_path is required.")
   const references = input.reference_images === undefined ? [] : input.reference_images
-  if (!Array.isArray(references) || references.length > 16 || references.some(path => typeof path !== "string" || !path.trim())) throw new Error("reference_images must contain at most sixteen nonempty local paths.")
+  if (!Array.isArray(references) || references.length > 16 || references.some(path => typeof path !== "string" || !path.trim())) throw new Error("reference_images must contain at most sixteen nonempty paths or HTTPS URLs.")
   for (const field of ["mask", "markup"]) {
-    if (input[field] !== undefined && (typeof input[field] !== "string" || !input[field].trim())) throw new Error(`${field} must be a nonempty local PNG path.`)
+    if (input[field] !== undefined && (typeof input[field] !== "string" || !input[field].trim())) throw new Error(`${field} must be a nonempty PNG path or HTTPS URL.`)
   }
   if (input.mask !== undefined && input.markup !== undefined) throw new Error("mask and markup are mutually exclusive.")
   if (!references.length && (input.mask !== undefined || input.markup !== undefined)) throw new Error("mask and markup require reference_images.")
@@ -38,15 +40,15 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
   }]))
   return {
     name: "openai_image",
-    description: "Generate or edit images using the paid OpenAI Images API, not ChatGPT subscription allowance. Caller parameters override configured defaults. Returns all images as new local files and attachments. All paths must stay inside the session directory. Supports up to 16 reference images, masks or markup, and PNG/JPEG/WebP outputs. For n>1, output_path is the first file; others add -2, -3, etc. Existing files are never overwritten. No automatic retries or subscription fallback. Streaming previews are not supported.",
+    description: "Generate or edit images using the paid OpenAI Images API, not ChatGPT subscription allowance. Only generate when the user requests an image. Caller parameters override configured defaults. Returns all images as new local files and attachments. Outputs must stay inside the session directory. References may be public HTTPS URLs or local files; external local files are enabled by default, subject to file permissions and allowExternalReferences configuration. Supports up to 16 reference images, masks or markup, and PNG/JPEG/WebP outputs. For n>1, output_path is the first file; others add -2, -3, etc. Existing files are never overwritten. No automatic retries or subscription fallback. Streaming previews are not supported.",
     input: {
       type: "object",
       properties: {
         prompt: { type: "string", minLength: 1, maxLength: 32_000 },
         output_path: { type: "string", minLength: 1, description: "New output path; extension must match output_format (PNG by default)." },
-        reference_images: { type: "array", maxItems: 16, items: { type: "string", minLength: 1 }, description: "Local PNG/JPEG/WebP references; each less than 50 MB. References select the editing endpoint." },
-        mask: { type: "string", minLength: 1, description: "Optional PNG mask, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup." },
-        markup: { type: "string", minLength: 1, description: "Optional transparent PNG annotation overlay for GPT Image 2.5 edits, first-reference dimensions. Exclusive with mask." },
+        reference_images: { type: "array", maxItems: 16, items: { type: "string", minLength: 1 }, description: "Local paths or public HTTPS PNG/JPEG/WebP references; each less than 50 MB. External local paths require allowExternalReferences. References select editing." },
+        mask: { type: "string", minLength: 1, description: "Optional local or public HTTPS PNG mask, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup." },
+        markup: { type: "string", minLength: 1, description: "Optional local or public HTTPS transparent PNG annotation overlay for GPT Image 2.5 edits, first-reference dimensions. Exclusive with mask." },
         ...properties,
       },
       required: ["prompt", "output_path"], additionalProperties: false,
@@ -61,34 +63,32 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
       timer.unref()
       const signal = AbortSignal.any([call.signal, lifetime, deadline.signal])
       const saved: string[] = []
+      let submitted = false
       try {
         const session = await waitFor(signal, () => ctx.session.get({ sessionID: call.sessionID }))
         const directory = session.location.directory
         const extension = extname(input.output_path)
         const paths = Array.from({ length: n }, (_, i) => i === 0 ? input.output_path : `${input.output_path.slice(0, -extension.length)}-${i + 1}${extension}`)
         const outputs = await Promise.all(paths.map(path => resolveOutputPath(directory, path, format)))
-        const references = await Promise.all(input.references.map(path => resolveReferencePath(directory, path)))
-        const mask = input.mask ? await resolveReferencePath(directory, input.mask) : undefined
-        const markup = input.markup ? await resolveReferencePath(directory, input.markup) : undefined
-        const reads = [...references, ...[mask, markup].filter((path): path is string => path !== undefined)]
+        const prepare = (path: string) => prepareReference(directory, path, config.allowExternalReferences ?? true)
+        const references = await Promise.all(input.references.map(prepare))
+        const mask = input.mask ? await prepare(input.mask) : undefined
+        const markup = input.markup ? await prepare(input.markup) : undefined
         const assert = (action: string, resources: string[]) => waitFor(signal, () => ctx.permission.assert({
           sessionID: call.sessionID, agent: call.agent, source: { type: "tool", messageID: call.messageID, id: call.id },
           action, resources, save: resources,
           ...(action === "openai_image" ? { metadata: { description: "Billed OpenAI API image request.", model: parameters.model, quality: parameters.quality, size: parameters.size, n } } : {}),
         }))
-        await assert("openai_image", outputs)
-        if (reads.length) await assert("read", reads)
+        await assert("openai_image", [String(parameters.model)])
         await assert("edit", outputs)
         const images: ImageUpload[] = []
         const overlays: { mask?: ImageUpload; markup?: ImageUpload } = {}
         let uploadBytes = 0
-        const upload = async (path: string, limit: number) => {
-          const current = await resolveReferencePath(directory, path)
-          if (current !== path) throw new Error("Reference image path changed after permission approval.")
-          const image = await readReferenceFile(path, signal, limit)
+        const upload = async (reference: Reference, limit: number) => {
+          const image = await readReference(reference, signal, limit, assert)
           uploadBytes += image.bytes.length
           if (uploadBytes > 200 * 1024 * 1024) throw new Error("Combined image uploads exceed the 200 MiB limit.")
-          return { ...image, name: basename(path) }
+          return image
         }
         for (const path of references) images.push(await upload(path, 49_999_999))
         for (const [kind, path] of [["mask", mask], ["markup", markup]] as const) {
@@ -104,6 +104,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         }
         await checkLocation()
         await waitFor(signal, () => call.progress({ status: "generating", output_paths: outputs }))
+        submitted = true
         const results = await generateApiImages({ ...parameters, prompt: input.prompt }, images, overlays, config.apiKey, signal, fetcher)
         for (const [i, image] of results.entries()) {
           await checkLocation()
@@ -112,15 +113,16 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         }
         return {
           content: [
-            { type: "text", text: `Saved ${saved.join(", ")}\nBilled to the OpenAI API. Requested model: ${parameters.model}; quality: ${parameters.quality}; size: ${parameters.size}.` },
+            { type: "text", text: `Saved ${saved.join(", ")}\nBilled to the OpenAI API. Requested model: ${parameters.model}; quality: ${parameters.quality}; size: ${parameters.size}.${results[0]?.reported ? `\nReported settings: ${JSON.stringify(results[0].reported)}` : ""}${results[0]?.usage ? `\nReported usage: ${JSON.stringify(results[0].usage)}` : ""}` },
             ...results.map((image, i) => ({ type: "file" as const, uri: `data:${image.mime};base64,${image.bytes.toString("base64")}`, mime: image.mime, name: basename(outputs[i]!) })),
           ],
-          metadata: { output_paths: saved, requested_model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format },
+          metadata: { output_paths: saved, requested_model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...(results[0]?.reported ? { reported: results[0].reported } : {}), ...(results[0]?.usage ? { usage: results[0].usage } : {}) },
         }
       } catch (error) {
         const partial = saved.length ? ` Files already saved: ${saved.join(", ")}.` : ""
-        if (deadline.signal.aborted) throw new Error(`Image generation timed out. API charges may still apply; do not automatically retry.${partial}`)
-        if (signal.aborted) throw new Error(`Image generation cancelled. API charges may still apply; do not automatically retry.${partial}`)
+        if (deadline.signal.aborted || signal.aborted) throw new ImageRequestError(deadline.signal.aborted ? "timeout" : "cancelled", `Image generation ${deadline.signal.aborted ? "timed out" : "cancelled"}.${partial}`, {
+          phase: submitted ? "dispatch" : "local", outcome: submitted ? "ambiguous" : "not_submitted",
+        })
         if (saved.length) throw new Error(`Could not save all generated images. Do not automatically retry.${partial}`)
         throw error
       } finally {
