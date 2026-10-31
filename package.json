@@ -5,10 +5,12 @@
   "description": "OpenCode V2 image generation through ChatGPT subscriptions or the OpenAI API",
   "type": "module",
   "exports": {
-    ".": "./index.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts"
   },
   "files": [
     "index.ts",
+    "tui.ts",
     "src",
     "docs",
     "README.md"

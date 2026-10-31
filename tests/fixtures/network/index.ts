@@ -70,6 +70,10 @@ export default Plugin.define({
             cancel() { return notify({ operation: 'cancelled' }); },
           }));
         }
+        if (request.prompt === 'synthetic inflight') {
+          const released = await original(`${origin}/image-release`, { signal: init?.signal, redirect: 'error' });
+          if (!released.ok) throw new Error('Synthetic running image was not released.');
+        }
         return Response.json({
           data: [{ b64_json: PNG }], size: '1x1', quality: 'low', output_format: 'png', background: edit ? 'transparent' : 'opaque',
           model: 'synthetic-unverified-model', api_key: token,

@@ -46,7 +46,15 @@ while (true) {
 }
 
 async function run(input: Record<string, unknown>): Promise<void> {
-  const args = ["run", "--format", "json", "--agent", "image-smoke", "--model", "openai/gpt-6-astra", "--title", "ChatGPT image live smoke", "--auto", JSON.stringify(input)]
+  const session = JSON.parse(execFileSync(executable, ["api", "post", "/api/session", "--data", JSON.stringify({
+    title: "ChatGPT image live smoke", location: { directory }, agent: "image-smoke", model: { providerID: "openai", id: "gpt-6-astra" },
+  })], { cwd: directory, encoding: "utf8", timeout: 30_000, windowsHide: true }))
+  const sessionID: unknown = session.data?.id
+  if (typeof sessionID !== "string" || !sessionID.startsWith("ses")) throw new Error("Live smoke session was not created.")
+  execFileSync(executable, ["api", "post", `/api/session/${sessionID}/command`, "--data", JSON.stringify({ name: "images", text: "on" })], {
+    cwd: directory, encoding: "utf8", timeout: 30_000, windowsHide: true,
+  })
+  const args = ["run", "--session", sessionID, "--format", "json", "--agent", "image-smoke", "--model", "openai/gpt-6-astra", "--title", "ChatGPT image live smoke", "--auto", JSON.stringify(input)]
   const child = spawn(executable, args, { cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
   const chunks: Buffer[] = []
   const errors: Buffer[] = []

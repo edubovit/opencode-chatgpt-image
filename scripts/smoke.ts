@@ -11,7 +11,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
-type Scenario = { operation: 'generate' | 'edit' | 'deny' | 'deny-model' | 'cancel' | 'probe' | 'catalog-reload'; requests: ObjectValue[] };
+type Scenario = {
+  operation: 'generate' | 'edit' | 'deny' | 'deny-model' | 'cancel' | 'probe' | 'catalog-reload' | 'forged' | 'stale' | 'inflight';
+  requests: ObjectValue[];
+  release?: () => void;
+};
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arguments_ = process.argv.slice(2);
@@ -39,6 +43,14 @@ const deadline = AbortSignal.timeout(120_000);
 const scenarios = new Map<string, Scenario>();
 const events: ObjectValue[] = [];
 const catalogEvents: ObjectValue[] = [];
+const statusEvents: ObjectValue[] = [];
+const statusType = 'rpc.opencode-chatgpt-image.toggle.status';
+const statusOverrides = new Map<string, boolean>();
+const eventAbort = new AbortController();
+let eventTask: Promise<void> | undefined;
+let eventConnected = false;
+let defaultEnabled = false;
+let selectedTool: string = toolName;
 let fixtureError: string | undefined;
 let stage = 'prepare';
 let hostOutput = '';
@@ -46,6 +58,8 @@ let host: ReturnType<typeof spawn> | undefined;
 let hostURL = '';
 let passed = false;
 let suppressionRequired = false;
+let modelRequests = 0;
+let pendingImage: ServerResponse | undefined;
 
 class SmokeError extends Error {}
 
@@ -90,11 +104,16 @@ function stream(response: ServerResponse, delta: ObjectValue, finish: string): v
 
 const provider = createServer((request, response) => {
   void (async () => {
+    if (request.method === 'GET' && request.url === '/image-release') {
+      check(!pendingImage, 'Unexpected concurrent synthetic image wait.');
+      pendingImage = response;
+      return;
+    }
     check(request.method === 'POST', 'Unexpected fixture HTTP method.');
     const payload = await body(request);
     if (request.url === '/image-event') {
       if (payload.operation === 'catalog-reload') {
-        check(catalogEvents.length < 30, 'Too many synthetic catalog reloads.');
+        check(catalogEvents.length < 100, 'Too many synthetic catalog reloads.');
         catalogEvents.push(payload);
         response.writeHead(204).end();
         return;
@@ -105,6 +124,7 @@ const provider = createServer((request, response) => {
       return;
     }
     check(request.url === '/v1/chat/completions', 'Unexpected synthetic provider path.');
+    modelRequests++;
     const scenario = scenarios.get(String(request.headers['x-fixture-session']));
     check(scenario, 'Unexpected synthetic model session.');
     scenario.requests.push(payload);
@@ -115,21 +135,25 @@ const provider = createServer((request, response) => {
       return;
     }
     const imageTools = registeredImageTools(payload);
-    check(imageTools.length === 1 && imageTools[0] === toolName, 'Image tool registration was not exclusive to the selected mode.');
+    const hidden = scenario.operation === 'forged'
+      || (['stale', 'inflight'].includes(scenario.operation) && scenario.requests.length > 1);
+    check(hidden ? imageTools.length === 0 : imageTools.length === 1 && imageTools[0] === toolName, 'Image tool visibility did not match the session toggle.');
     if (scenario.requests.length === 1) {
       const args = {
-        prompt: scenario.operation === 'cancel' ? 'synthetic cancellation' : 'synthetic image',
+        prompt: scenario.operation === 'cancel' ? 'synthetic cancellation' : scenario.operation === 'inflight' ? 'synthetic inflight' : 'synthetic image',
         output_path: `${scenario.operation}.png`,
         ...(scenario.operation === 'edit' ? { reference_images: ['generate.png'], background: 'transparent' } : {}),
       };
-      stream(response, {
+      const reply = () => stream(response, {
         role: 'assistant', tool_calls: [{ index: 0, id: `call_${randomUUID()}`, type: 'function', function: { name: toolName, arguments: JSON.stringify(args) } }],
       }, 'tool_calls');
+      if (scenario.operation === 'stale') scenario.release = reply;
+      else reply();
       return;
     }
     stream(response, { role: 'assistant', content: 'Synthetic fixture completed.' }, 'stop');
-  })().catch(() => {
-    fixtureError = 'Synthetic provider rejected an unexpected request.';
+  })().catch(error => {
+    fixtureError = error instanceof SmokeError ? error.message : 'Synthetic provider rejected an unexpected request.';
     response.writeHead(500).end('Synthetic fixture contract failed.');
   });
 });
@@ -145,6 +169,35 @@ async function api(path: string, method = 'GET', payload?: Json): Promise<Json> 
   check(response.ok, `Private host API failed (${response.status}) during ${stage}.`);
   if (response.status === 204) return null;
   return response.json() as Promise<Json>;
+}
+
+async function subscribeStatuses(): Promise<void> {
+  try {
+    const response = await fetch(`${hostURL}/api/event?types=${encodeURIComponent(statusType)}`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` },
+      signal: AbortSignal.any([eventAbort.signal, deadline]), redirect: 'error',
+    });
+    check(response.ok && response.body, 'Private host status event subscription failed.');
+    let buffered = '';
+    for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+      buffered += chunk;
+      check(buffered.length < 1024 * 1024, 'Status event stream exceeded the buffer bound.');
+      let end: number;
+      while ((end = buffered.indexOf('\n')) >= 0) {
+        const line = buffered.slice(0, end).trimEnd();
+        buffered = buffered.slice(end + 1);
+        if (!line.startsWith('data:')) continue;
+        const event = object(JSON.parse(line.slice(5).trim()) as Json);
+        if (event.type === 'server.connected') eventConnected = true;
+        if (event.type !== statusType) continue;
+        check(statusEvents.length < 100, 'Too many image toggle status events.');
+        statusEvents.push(event);
+      }
+    }
+    if (!eventAbort.signal.aborted) fixtureError = 'Status event stream ended unexpectedly.';
+  } catch (error) {
+    if (!eventAbort.signal.aborted) fixtureError = error instanceof SmokeError ? error.message : 'Status event stream failed.';
+  }
 }
 
 async function eventually(condition: () => boolean | Promise<boolean>, message: string, milliseconds = 30_000): Promise<void> {
@@ -164,7 +217,7 @@ async function context(sessionID: string): Promise<ObjectValue[]> {
 }
 
 function registeredImageTools(payload: ObjectValue): Json[] {
-  return array(payload.tools).map(tool => object(object(tool).function).name ?? null).filter(name => name === 'chatgpt_image' || name === 'openai_image' || name === nativeTool).sort();
+  return array(payload.tools ?? []).map(tool => object(object(tool).function).name ?? null).filter(name => name === 'chatgpt_image' || name === 'openai_image' || name === nativeTool).sort();
 }
 
 function imageTool(messages: ObjectValue[]): ObjectValue {
@@ -177,9 +230,21 @@ function imageTool(messages: ObjectValue[]): ObjectValue {
 async function runScenario(sessionID: string, operation: Scenario['operation']): Promise<Scenario> {
   const scenario: Scenario = { operation, requests: [] };
   scenarios.set(sessionID, scenario);
+  const before = events.length;
   await api(`/api/session/${sessionID}/prompt`, 'POST', { text: `Synthetic ${operation} fixture.` });
+  if (operation === 'stale') {
+    await eventually(() => Boolean(scenario.release), 'Synthetic stale request did not capture the enabled tool schema.');
+    await command(sessionID, 'off', false);
+    scenario.release!();
+  }
+  if (operation === 'inflight') {
+    await eventually(() => Boolean(pendingImage), 'Synthetic generation did not start its held response.');
+    await command(sessionID, 'off', false);
+    pendingImage!.writeHead(204).end();
+    pendingImage = undefined;
+  }
   if (operation === 'cancel') {
-    await eventually(() => events.filter(event => event.operation === 'generate').length === 2, 'Synthetic cancellation did not reach the image body.');
+    await eventually(() => events.slice(before).some(event => event.operation === 'generate'), 'Synthetic cancellation did not reach the image body.');
     await api(`/api/session/${sessionID}/interrupt`, 'POST', { resume: false });
   }
   await api(`/api/experimental/session/${sessionID}/wait`, 'POST');
@@ -187,9 +252,10 @@ async function runScenario(sessionID: string, operation: Scenario['operation']):
   return scenario;
 }
 
-async function createSession(deny?: 'edit' | 'model'): Promise<string> {
+async function createSession(deny?: 'edit' | 'model', parentID?: string): Promise<string> {
   const response = object(await api('/api/session', 'POST', {
     title: 'Synthetic image fixture', location: { directory: workspace }, model: { providerID, id: 'synthetic' },
+    ...(parentID ? { parentID } : {}),
     ...(deny ? { permissions: [{ action: deny === 'edit' ? 'edit' : toolName, resource: deny === 'edit' ? '*' : imageModel, effect: 'deny' }] } : {}),
   }));
   const id = object(response.data).id;
@@ -197,28 +263,59 @@ async function createSession(deny?: 'edit' | 'model'): Promise<string> {
   return id;
 }
 
-async function inventory(expected: readonly string[], reload = false): Promise<boolean> {
+async function command(sessionID: string, text: string, idle = true): Promise<void> {
+  const before = modelRequests;
+  const statusBefore = statusEvents.length;
+  const history = idle ? JSON.stringify(await context(sessionID)) : '';
+  const inbox = idle ? JSON.stringify(await api(`/api/session/${sessionID}/inbox`)) : '';
+  await api(`/api/session/${sessionID}/command`, 'POST', { name: 'images', text });
+  await eventually(() => statusEvents.length > statusBefore, 'Images command did not emit a public status event.');
+  check(statusEvents.length === statusBefore + 1, 'Images command emitted more than one status event.');
+  const event = statusEvents[statusBefore]!;
+  const status = object(event.data);
+  if (text === 'on' || text === 'off') statusOverrides.set(sessionID, text === 'on');
+  check(status.sessionID === sessionID && status.enabled === (statusOverrides.get(sessionID) ?? defaultEnabled)
+    && status.enabledByDefault === defaultEnabled && status.tool === selectedTool, 'Images status event did not match the invoking session state.');
+  check(resolve(String(object(event.location).directory)) === workspace, 'Images status event was attributed to the wrong location.');
+  await delay(100, undefined, { signal: deadline });
+  check(modelRequests === before && !fixtureError, 'Images command triggered a provider request.');
+  if (idle) {
+    check(JSON.stringify(await context(sessionID)) === history, 'Images command modified the session history.');
+    check(JSON.stringify(await api(`/api/session/${sessionID}/inbox`)) === inbox, 'Images command queued a model-visible message.');
+  }
+}
+
+async function inventory(expected: readonly string[], reload = false, sessionID?: string, registered: readonly string[] = expected): Promise<boolean> {
   const before = catalogEvents.length;
-  const probe = await runScenario(await createSession(), reload ? 'catalog-reload' : 'probe');
+  const probe = await runScenario(sessionID ?? await createSession(), reload ? 'catalog-reload' : 'probe');
   check(probe.requests.length === 1, 'Tool inventory probe made unexpected model requests.');
   const wanted = JSON.stringify([...expected].sort());
   const advertised = registeredImageTools(probe.requests[0]!);
+  let registryMatches = true;
   if (suppressionRequired) check(!advertised.includes(nativeTool), 'Native image tool returned while the production plugin was configured.');
+  if (JSON.stringify(advertised) === wanted) {
+    for (const name of expected.filter(name => name === 'chatgpt_image' || name === 'openai_image')) {
+      const tool = array(probe.requests[0]!.tools).map(item => object(object(item).function)).find(tool => tool.name === name);
+      check(tool && typeof tool.description === 'string' && tool.description.length > 0, 'Enabled image tool lost its description.');
+      const schema = object(tool.parameters);
+      check(array(schema.required).includes('prompt') && array(schema.required).includes('output_path')
+        && object(schema.properties).reference_images, 'Enabled image tool lost its full argument schema.');
+    }
+  }
   if (reload) {
     check(catalogEvents.length === before + 1, 'Catalog reload fixture did not run exactly once.');
-    check(JSON.stringify(catalogEvents.at(-1)?.tools) === wanted, 'Catalog reload restored a suppressed image tool in the registry.');
+    registryMatches = JSON.stringify(catalogEvents.at(-1)?.tools) === JSON.stringify([...registered].sort());
     check(catalogEvents.at(-1)?.imageModelAvailable === true, 'Native image model was not available after catalog reload.');
   }
-  return JSON.stringify(advertised) === wanted;
+  return JSON.stringify(advertised) === wanted && registryMatches;
 }
 
-async function waitForInventory(expected: readonly string[]): Promise<void> {
+async function waitForInventory(expected: readonly string[], registered: readonly string[] = expected, sessionID?: string): Promise<void> {
   let probes = 0;
   await eventually(async () => {
     check(++probes <= 30, 'Watched config reload exceeded the bounded probe count.');
-    return inventory(expected);
+    return await inventory(expected, false, sessionID) && await inventory(expected, true, sessionID, registered);
   }, 'Watched configuration did not yield the expected image tool inventory.');
-  check(await inventory(expected, true), 'Image tool inventory changed after catalog reload.');
 }
 
 try {
@@ -286,6 +383,9 @@ try {
   check(info.pid === host.pid, 'Private host identity does not match the owned process.');
   const temporary = object(info.paths).tmp;
   check(typeof temporary === 'string' && resolve(temporary).startsWith(root + sep), 'Private host temporary directory was not isolated.');
+  stage = 'public status event subscription';
+  eventTask = subscribeStatuses();
+  await eventually(() => eventConnected, 'Private host status event subscription did not become ready.');
   stage = 'network fixture loading before production plugin';
   let plugins: ObjectValue[] = [];
   await eventually(async () => {
@@ -301,12 +401,13 @@ try {
   stage = 'native image tool available before plugin registration';
   await waitForInventory([nativeTool]);
   stage = 'production plugin registration suppresses native image tool';
-  const pluginEntry = { package: pathToFileURL(pluginDirectory).href, options: { ...(mode === 'api' ? { mode } : {}), apiKey: token } };
+  const pluginEntry = { package: pathToFileURL(pluginDirectory).href, options: { ...(mode === 'api' ? { mode } : {}), apiKey: token, enabledByDefault: false } };
   await writeFile(configPath, JSON.stringify({ ...config, plugins: [...config.plugins, pluginEntry] }));
-  await waitForInventory([toolName]);
+  await waitForInventory([], [toolName]);
   suppressionRequired = true;
   plugins = array(object(await api('/api/plugin')).data).map(object);
-  check(plugins.some(plugin => plugin.id === 'opencode-chatgpt-image' && object(plugin.state).status === 'active'), 'Production plugin did not load.');
+  check(plugins.some(plugin => plugin.id === 'opencode-chatgpt-image' && object(plugin.state).status === 'active'
+    && object(plugin.features).tui === true), 'Production plugin or its TUI companion was not discovered.');
   if (mode === 'chatgpt') {
     stage = 'synthetic OAuth fixture';
     const credential = object(object(await api('/api/credential', 'POST', {
@@ -319,7 +420,31 @@ try {
     stage = 'API-only credential isolation';
     check(array(object(await api('/api/credential')).data).length === 0, 'API smoke must not have saved OAuth or API credentials.');
   }
+  stage = 'new sessions default off and local command feedback';
   const session = await createSession();
+  const otherSession = await createSession();
+  check(await inventory([], false, session) && await inventory([], false, otherSession), 'A new session advertised an image tool.');
+  await command(session, '');
+  await command(otherSession, 'status');
+  stage = 'enable only session A';
+  await command(session, 'on', true);
+  check(await inventory([toolName], true, session), 'Enabling images did not expose the selected schema.');
+  check(await inventory([], false, otherSession), 'Enabling images affected another session.');
+  const childSession = await createSession(undefined, session);
+  check(await inventory([], false, childSession), 'Child session inherited its parent image toggle.');
+  stage = 'disable session A and reject a forged hidden call';
+  await command(session, 'off');
+  check(await inventory([], false, session), 'Disabling images retained an image schema.');
+  const forged = await runScenario(session, 'forged');
+  check(forged.requests.length >= 1 && Number(events.length) === 0, 'A forged hidden image call reached the backend.');
+  await readFile(join(workspace, 'forged.png')).then(() => { throw new Error('Hidden image was written.'); }, () => {});
+  stage = 'disable blocks a tool call from an already captured request';
+  await command(session, 'on', true);
+  await runScenario(session, 'stale');
+  check(imageTool(await context(session)).status === 'error', 'Captured image call did not fail after disabling images.');
+  check(Number(events.length) === 0, 'A stale image call reached the backend after disabling images.');
+  await readFile(join(workspace, 'stale.png')).then(() => { throw new Error('Stale image was written.'); }, () => {});
+  await command(session, 'on', true);
   for (const operation of ['generate', 'edit'] as const) {
     stage = `synthetic ${operation}`;
     const scenario = await runScenario(session, operation);
@@ -347,6 +472,7 @@ try {
   for (const permission of ['edit', 'model'] as const) {
     stage = `${permission} permission denial`;
     const denied = await createSession(permission);
+    await command(denied, 'on', true);
     const operation = permission === 'edit' ? 'deny' : 'deny-model';
     await runScenario(denied, operation);
     check(imageTool(await context(denied)).status === 'error', 'Permission denial was not recorded as a tool error.');
@@ -355,30 +481,60 @@ try {
   }
   stage = 'cancellation';
   const cancelled = await createSession();
+  await command(cancelled, 'on', true);
   await runScenario(cancelled, 'cancel');
   await eventually(() => events.some(event => event.operation === 'cancelled'), 'Cancellation did not stop the response stream.');
   await readFile(join(workspace, 'cancel.png')).then(() => { throw new Error('Cancelled image was written.'); }, () => {});
+  stage = 'disabling does not abort an already running generation';
+  await runScenario(session, 'inflight');
+  check(imageTool(await context(session)).status === 'completed', 'Disabling images aborted an already running generation.');
+  check((await readFile(join(workspace, 'inflight.png'))).equals(png), 'Running generation did not save its image after disabling.');
+  check(await inventory([], false, session), 'Running generation restored the disabled image schema.');
   const backendEvents = events.length;
+  let registered: readonly string[] = [toolName];
   for (const [label, options, expected] of [
     ['missing API key', { mode: 'api' }, []],
     ['corrected API key', { mode: 'api', apiKey: token }, ['openai_image']],
     ['explicit ChatGPT', { mode: 'chatgpt', apiKey: token }, ['chatgpt_image']],
     ['external references enabled', { mode: 'chatgpt', allowExternalReferences: true }, ['chatgpt_image']],
     ['invalid external references', { mode: 'chatgpt', allowExternalReferences: 'true' }, []],
+    ['invalid enabled default', { mode: 'chatgpt', enabledByDefault: 'false' }, []],
     ['invalid mode', { mode: 'invalid' }, []],
     ['missing API key after ChatGPT', { mode: 'api' }, []],
     ['corrected API key after ChatGPT', { mode: 'api', apiKey: token }, ['openai_image']],
   ] as const) {
     stage = `watched configuration reload: ${label}`;
-    const updated = { ...config, plugins: [...config.plugins, { package: pluginEntry.package, options }] };
+    if (registered.length > 0) {
+      await command(session, 'on', true);
+      check(await inventory(registered, false, session), 'Existing session could not enable images before reload.');
+    }
+    const updated = { ...config, plugins: [...config.plugins, { package: pluginEntry.package, options: { enabledByDefault: false, ...options } }] };
     await writeFile(configPath, JSON.stringify(updated));
-    await waitForInventory(expected);
+    await waitForInventory([], expected, session);
+    statusOverrides.clear();
+    if (expected[0]) selectedTool = expected[0];
     await delay(250, undefined, { signal: deadline });
-    check(await inventory(expected), 'Reloaded tool inventory did not remain stable; a previous plugin generation may have been restored.');
+    check(await inventory([], false, session) && await inventory([]), 'Reloaded plugin did not keep both existing and new sessions disabled.');
     const currentPlugins = array(object(await api('/api/plugin')).data).map(object);
     check(currentPlugins.some(plugin => plugin.id === 'opencode-chatgpt-image' && object(plugin.state).status === 'active'), 'Reloaded plugin did not activate successfully; stale-generation fallback may have occurred.');
     check(events.length === backendEvents, 'Tool inventory reload probes dispatched an image request.');
+    registered = expected;
   }
+  stage = 'omitted enabledByDefault enables new and existing sessions after reload';
+  await writeFile(configPath, JSON.stringify({
+    ...config, plugins: [...config.plugins, { package: pluginEntry.package, options: { mode, apiKey: token } }],
+  }));
+  await waitForInventory([toolName], [toolName], session);
+  statusOverrides.clear();
+  defaultEnabled = true;
+  selectedTool = toolName;
+  check(await inventory([toolName]), 'Omitted enabledByDefault did not enable a new session.');
+  await command(session, 'status', true);
+  await command(session, 'off');
+  check(await inventory([], false, session), 'Session off override did not override the enabled default.');
+  const enabledChild = await createSession(undefined, session);
+  check(await inventory([toolName], false, enabledChild), 'Child session inherited its parent off override instead of the configured default.');
+  check(events.length === backendEvents, 'Default-policy probes dispatched an image request.');
   stage = 'plugin removal restores native image tool';
   suppressionRequired = false;
   await writeFile(configPath, JSON.stringify(config));
@@ -394,6 +550,8 @@ try {
   process.exitCode = 1;
 } finally {
   stage = 'cleanup';
+  eventAbort.abort();
+  await eventTask;
   if (host && host.exitCode === null && host.signalCode === null) {
     const exited = once(host, 'exit');
     const cleanupTimeout = new AbortController();
@@ -409,4 +567,4 @@ try {
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
-if (passed) console.log(`SYNTHETIC ONLY — OpenCode 2.2.5 (${mode}): native image tool available before registration; plugin exposed only ${toolName}; generation/edit, reported metadata and normalized-image continuation passed; model/edit denial blocked dispatch; cancellation stopped the response; valid/invalid config and catalog reloads kept native suppressed; plugin removal restored native; ${mode === 'api' ? 'no saved OAuth; ' : ''}owned host and temporary state cleaned up.`);
+if (passed) console.log(`SYNTHETIC ONLY — OpenCode 2.2.5 (${mode}): TUI companion discovered; native available before registration/removal; enabledByDefault false/omitted verified; /images emits correct public SSE status without provider requests/history changes; children use configured defaults; enabled schema is only ${toolName}; hidden/stale calls blocked; generation/edit, metadata and image continuation passed; permissions and cancellation passed; off preserves running generation; config reload resets existing sessions to defaults and catalog reload keeps native suppressed; ${mode === 'api' ? 'no saved OAuth; ' : ''}owned host and temporary state cleaned up. TUI pixels were not tested.`);

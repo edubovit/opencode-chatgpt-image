@@ -23,7 +23,7 @@ The repository deliberately contains no `opencode.json`. Register the checkout *
 
 The tools are never registered together. An optional API key in `chatgpt` mode is unused. Neither mode falls back to the other, switches accounts, or automatically retries requests.
 
-While loaded, the plugin removes OpenCode's `experimental_image_generate` tool, including when its own configuration is invalid. Unloading or failing to load the plugin can restore the native tool. To keep it disabled independently, add `"-opencode.tool.image-generate"` to your existing `plugins` array. This does not disable providers, authentication, reading images, or previews, and does not cancel jobs already started.
+While loaded, the plugin removes OpenCode's `experimental_image_generate` tool, including when its own configuration is invalid or the session toggle is off. Unloading or failing to load the plugin can restore the native tool. To keep it disabled independently, add `"-opencode.tool.image-generate"` to your existing `plugins` array. This does not disable providers, authentication, reading images, or previews, and does not cancel jobs already started.
 
 ### ChatGPT subscription
 
@@ -77,6 +77,22 @@ Set `OPENAI_API_KEY` in the environment of the OpenCode server. OpenCode expands
 `options.defaults` accepts the API tool's generation parameters listed below. Caller arguments override these defaults; file paths and prompts are supplied per call. In `chatgpt` mode, API defaults do not affect its limited tool.
 
 Callers can pass `null` to clear optional configured `output_compression`, `moderation`, `input_fidelity`, `safety_identifier`, or `user` values. For example, clear `moderation` for editing or clear JPEG compression when changing output to PNG. Null is removed locally, not sent to OpenAI.
+
+## Session toggle
+
+Image tools are enabled by default. To keep the image tool schema out of normal model requests, add `"enabledByDefault": false` to the plugin's existing `options` alongside its mode, key and other settings. This option controls tool visibility, not whether the plugin loads.
+
+Use these commands in a session:
+
+| Command | Effect |
+| --- | --- |
+| `/images on` | Expose the configured image tool for this session. |
+| `/images off` | Hide it and block new image-tool calls. |
+| `/images status` or `/images` | Show the current state and configured default. |
+
+Commands do not call a model or generate images. The bundled TUI component shows confirmation for the displayed session. Feedback is a live RPC event: clients without that component, or disconnected clients, do not display the toast. No confirmation text is inserted into model context or session history.
+
+Overrides affect only the current session in the loaded plugin instance. Other sessions and child sessions use the configured default. Overrides are not persisted; plugin reload, unload or server restart resets them to `enabledByDefault`. Turning tools off does not cancel calls already executing or erase previous tool calls/results. Generation still requires its normal permissions.
 
 ## Use
 

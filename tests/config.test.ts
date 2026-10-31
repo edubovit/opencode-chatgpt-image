@@ -10,7 +10,7 @@ const oldModel = { model: "gpt-image-1.5", quality: "high", size: "1024x1024" }
 const resolve = (overrides: Record<string, unknown> = {}, editing = false) => resolveApiParameters({}, overrides, editing)
 
 test("defaults select ChatGPT without a key and define overridable API defaults", () => {
-  assert.deepEqual(parseConfig(undefined), { mode: "chatgpt", defaults: { ...base, orientation: "auto" }, allowExternalReferences: true })
+  assert.deepEqual(parseConfig(undefined), { mode: "chatgpt", defaults: { ...base, orientation: "auto" }, allowExternalReferences: true, enabledByDefault: true })
   assert.deepEqual(parseConfig({}), parseConfig(undefined))
   assert.deepEqual(resolve(), { parameters: base, format: "png", n: 1 })
 })
@@ -45,6 +45,20 @@ test("presets and configured output paths are not supported", () => {
     assert.throws(() => parseConfig({ defaults: { [name]: "fixture" } }), /Unknown image parameter/)
     assert.throws(() => resolve({ [name]: "fixture" }), /Unknown image parameter/)
   }
+})
+
+test("image tool exposure defaults to enabled and accepts only a boolean override in both modes", () => {
+  for (const mode of ["chatgpt", "api"]) {
+    for (const enabledByDefault of [undefined, true, false]) {
+      const config = parseConfig({ mode, apiKey: "synthetic-key", enabledByDefault })
+      assert.equal(config.enabledByDefault, enabledByDefault ?? true)
+      assert.equal(Object.hasOwn(config.defaults, "enabledByDefault"), false)
+    }
+    for (const enabledByDefault of [null, "false", 0, {}, []]) {
+      assert.throws(() => parseConfig({ mode, apiKey: "synthetic-key", enabledByDefault }), /enabledByDefault must be a boolean/)
+    }
+  }
+  assert.throws(() => resolve({ enabledByDefault: false }), /Unknown image parameter/)
 })
 
 test("caller overrides every default without changing config or inputs", () => {

@@ -1,8 +1,8 @@
 export type OutputFormat = "png" | "jpeg" | "webp"
 export type ApiDefaults = Record<string, string | number>
 export type PluginConfig =
-  | { mode: "chatgpt"; apiKey?: string; defaults: ApiDefaults; allowExternalReferences?: boolean }
-  | { mode: "api"; apiKey: string; defaults: ApiDefaults; allowExternalReferences?: boolean }
+  | { mode: "chatgpt"; apiKey?: string; defaults: ApiDefaults; allowExternalReferences?: boolean; enabledByDefault?: boolean }
+  | { mode: "api"; apiKey: string; defaults: ApiDefaults; allowExternalReferences?: boolean; enabledByDefault?: boolean }
 
 const models = [
   "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2026-09-08",
@@ -134,8 +134,9 @@ function resolveParameters(defaults: Record<string, unknown>, overrides: Record<
 
 export function parseConfig(value: unknown): PluginConfig {
   const options = object(value === undefined ? {} : value, "Plugin options must be an object.")
-  if (Object.keys(options).some(key => !["mode", "apiKey", "defaults", "allowExternalReferences"].includes(key))) throw new Error("Unknown plugin option.")
+  if (Object.keys(options).some(key => !["mode", "apiKey", "defaults", "allowExternalReferences", "enabledByDefault"].includes(key))) throw new Error("Unknown plugin option.")
   if (options.allowExternalReferences !== undefined && typeof options.allowExternalReferences !== "boolean") throw new Error("allowExternalReferences must be a boolean.")
+  if (options.enabledByDefault !== undefined && typeof options.enabledByDefault !== "boolean") throw new Error("enabledByDefault must be a boolean.")
   const mode = options.mode === undefined ? "chatgpt" : options.mode
   if (mode !== "chatgpt" && mode !== "api") throw new Error("Plugin mode must be chatgpt or api.")
   let apiKey: string | undefined
@@ -148,7 +149,7 @@ export function parseConfig(value: unknown): PluginConfig {
   const defaults = { ...baseline, ...knownParameters(options.defaults === undefined ? {} : options.defaults) }
   validateValues(defaults)
   resolveParameters(defaults, {})
-  const references = { allowExternalReferences: options.allowExternalReferences ?? true }
+  const references = { allowExternalReferences: options.allowExternalReferences ?? true, enabledByDefault: options.enabledByDefault ?? true }
   return mode === "api" ? { mode, apiKey: apiKey!, defaults, ...references } : { mode, defaults, ...references }
 }
 

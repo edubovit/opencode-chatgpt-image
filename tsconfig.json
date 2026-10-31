@@ -12,5 +12,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node"]
   },
-  "include": ["index.ts", "src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
+  "include": ["index.ts", "tui.ts", "src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
 }
