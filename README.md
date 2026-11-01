@@ -90,6 +90,8 @@ Use these commands in a session:
 | `/images off` | Hide it and block new image-tool calls. |
 | `/images status` or `/images` | Show the current state and configured default. |
 
+While writing a prompt, press **Ctrl+P** and choose **Enable image tools**, **Disable image tools**, or **Image tools status** under **Images**. These actions work in the displayed session without submitting, clearing or stashing your draft. The slash commands remain available.
+
 Commands do not call a model or generate images. The bundled TUI component shows confirmation for the displayed session. Feedback is a live RPC event: clients without that component, or disconnected clients, do not display the toast. No confirmation text is inserted into model context or session history.
 
 Overrides affect only the current session in the loaded plugin instance. Other sessions and child sessions use the configured default. Overrides are not persisted; plugin reload, unload or server restart resets them to `enabledByDefault`. Turning tools off does not cancel calls already executing or erase previous tool calls/results. Generation still requires its normal permissions.

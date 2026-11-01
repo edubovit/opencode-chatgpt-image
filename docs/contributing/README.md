@@ -18,6 +18,17 @@ npm pack --dry-run
 
 The package exports TypeScript source directly for OpenCode's plugin runtime. No build or install lifecycle script is required. Root `index.ts` and `tui.ts` support configured local-directory discovery; named packages expose the TUI part through `./tui`. The entrypoints, `src/`, `docs/`, README, package manifest, and license are packaged; test harnesses are not part of the plugin.
 
+## Terminal regression
+
+`scripts/tui-smoke.mjs` drives an isolated OpenCode 2.2.5 TUI through a real PTY. The Windows test uses external `@lydell/node-pty` 1.2.0-beta.18 and `@xterm/headless` 6.0.0 modules; these are not plugin dependencies. Set `OPENCODE_TUI_TEST_MODULES` to an existing `node_modules` directory containing them. The harness does not install packages. Replace the placeholder below with that directory:
+
+```powershell
+$env:OPENCODE_TUI_TEST_MODULES = '<test-tools>/node_modules'
+node scripts/tui-smoke.mjs
+```
+
+`OPENCODE_BIN` can select the executable. An optional positional plugin-directory argument tests a fresh installed package. The harness selects all three Ctrl+P actions while a draft is present, verifies exact draft retention and continued editing, checks status events and visible feedback, and rejects model/image requests or transcript/inbox changes. It uses isolated synthetic configuration, cleans up its own processes/state, and saves terminal captures under ignored `output/tui-smoke/`.
+
 ## Live validation
 
 **Get the account owner's approval first. This consumes subscription quota.** No public API fallback is available.
@@ -36,6 +47,7 @@ Successful generation establishes account/transport compatibility, not the ident
 - `src/config.ts` parses `mode`, `apiKey`, parameter `defaults`, and the optional booleans `allowExternalReferences` and `enabledByDefault` (both default true). Caller parameters are merged and validated as an effective combination. Orientation is converted to size, never sent as an invented API field. Errors never include configuration values.
 - `src/session-toggle.ts` retains a direct executable tool registration and filters its schema per session through `context`, `compaction`, and `generate` hooks. The `/images` command changes only an in-memory session override, or reports status. The executor checks current state before entering the underlying tool, blocking calls from an older enabled snapshot after the session is disabled. Calls already executing keep their original lifetime/cancellation contract. Cleanup revokes stale callbacks and discards overrides; new plugin instances use the configured default. Child sessions do not inherit their parent's override.
 - `src/toggle-rpc.ts` defines a strict status-only RPC event; `tui.ts` subscribes and shows a toast only for the current session/location. There are no RPC methods or model-visible activation tools. Status events are live-only and do not mutate the transcript, pending inbox, or model context. This avoids synthetic status messages waking execution or remaining queued until later input. Clients without the TUI companion need an event subscriber to display confirmation.
+- `src/tui-commands.ts` registers three session-only Ctrl+P actions in a host-owned global keymap layer. They call the existing `images` server command with fixed arguments and the session displayed at invocation; they do not access the composer, synthesize key input, or add slash aliases. Static failure toasts are suppressed after unload or navigation to another session. Plugin cleanup revokes captured callbacks; OpenCode disposes the keymap layer.
 - Caller `null` clears the optional compression, moderation, fidelity and identity defaults before validation. It never appears on the wire; required/defaulted core controls still reject null. This lets callers change operation or format without inheriting incompatible optional settings.
 - `src/api-tool.ts` implements API-mode permissions, bounded input uploads, local output preflight, generation/edit dispatch, and all returned attachments. API keys remain in the private execution closure, not the schema, tool inputs or result metadata. Partial batch writes are reported without deleting completed outputs.
 - `src/openai.ts` calls only `api.openai.com/v1/images/generations` (JSON) or `images/edits` (multipart). It has no credential lookup, redirects or retries. All supplied authentication comes from plugin configuration. It expects the exact requested image count and format. Requests are limited to 200 MiB, response bodies to 256 MiB, decoded images to 32 MiB each.
