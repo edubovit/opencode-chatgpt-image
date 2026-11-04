@@ -44,9 +44,9 @@ export default Plugin.define({
           if (!(init.body instanceof FormData) || headers.has('content-type')) throw new Error('API edits must use multipart with an automatic boundary.');
           const uploads = init.body.getAll('image[]');
           references = uploads.length;
-          if (references !== 1) throw new Error('API edit reference count failed.');
-          for (const image of uploads) {
-            if (!(image instanceof File) || image.type !== 'image/png' || image.name !== 'generate.png'
+          if (references !== 3) throw new Error('API edit reference count failed.');
+          for (const [index, image] of uploads.entries()) {
+            if (!(image instanceof File) || image.type !== 'image/png' || image.name !== ['attachment-1.png', 'attachment-2.png', 'generate.png'][index]
               || Buffer.from(await image.arrayBuffer()).toString('base64') !== PNG) throw new Error('API edit upload failed.');
           }
           request = Object.fromEntries([...init.body].filter(([name]) => name !== 'image[]'));

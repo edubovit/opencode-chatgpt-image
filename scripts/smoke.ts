@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
 type Scenario = {
-  operation: 'generate' | 'edit' | 'deny' | 'deny-model' | 'cancel' | 'probe' | 'catalog-reload' | 'forged' | 'stale' | 'inflight';
+  operation: 'generate' | 'edit' | 'deny' | 'deny-model' | 'cancel' | 'probe' | 'catalog-reload' | 'forged' | 'stale' | 'inflight' | 'foreign-attachment';
   requests: ObjectValue[];
   release?: () => void;
 };
@@ -60,6 +60,7 @@ let passed = false;
 let suppressionRequired = false;
 let modelRequests = 0;
 let pendingImage: ServerResponse | undefined;
+let attachmentHandles: string[] = [];
 
 class SmokeError extends Error {}
 
@@ -139,10 +140,20 @@ const provider = createServer((request, response) => {
       || (['stale', 'inflight'].includes(scenario.operation) && scenario.requests.length > 1);
     check(hidden ? imageTools.length === 0 : imageTools.length === 1 && imageTools[0] === toolName, 'Image tool visibility did not match the session toggle.');
     if (scenario.requests.length === 1) {
+      const tool = array(payload.tools).map(item => object(object(item).function)).find(item => item.name === toolName);
+      if (scenario.operation === 'edit') {
+        const description = String(tool?.description);
+        attachmentHandles = [...description.matchAll(/attachment:msg_[A-Za-z0-9_-]+:[1-9][0-9]*/g)].map(match => match[0]);
+        check(attachmentHandles.length === 2, 'Attached images were not advertised as exact message-specific handles.');
+        check(!description.includes(png.toString('base64')), 'Attachment catalog exposed base64 to tool arguments.');
+        check(description.includes('what to preserve') && description.includes('reference_images order'), 'Image tool lost reference-use guidance.');
+      }
+      if (scenario.operation === 'foreign-attachment') check(!String(tool?.description).includes(attachmentHandles[0]!), 'Attachment catalog leaked across sessions.');
       const args = {
         prompt: scenario.operation === 'cancel' ? 'synthetic cancellation' : scenario.operation === 'inflight' ? 'synthetic inflight' : 'synthetic image',
         output_path: `${scenario.operation}.png`,
-        ...(scenario.operation === 'edit' ? { reference_images: ['generate.png'], background: 'transparent' } : {}),
+        ...(scenario.operation === 'edit' ? { reference_images: [...attachmentHandles, 'generate.png'], background: 'transparent' } : {}),
+        ...(scenario.operation === 'foreign-attachment' ? { reference_images: [attachmentHandles[0]!] } : {}),
       };
       const reply = () => stream(response, {
         role: 'assistant', tool_calls: [{ index: 0, id: `call_${randomUUID()}`, type: 'function', function: { name: toolName, arguments: JSON.stringify(args) } }],
@@ -231,7 +242,10 @@ async function runScenario(sessionID: string, operation: Scenario['operation']):
   const scenario: Scenario = { operation, requests: [] };
   scenarios.set(sessionID, scenario);
   const before = events.length;
-  await api(`/api/session/${sessionID}/prompt`, 'POST', { text: `Synthetic ${operation} fixture.` });
+  await api(`/api/session/${sessionID}/prompt`, 'POST', {
+    text: `Synthetic ${operation} fixture.`,
+    ...(operation === 'edit' ? { files: [1, 2].map(index => ({ uri: `data:image/png;base64,${png.toString('base64')}`, name: `clipboard-${index}.png` })) } : {}),
+  });
   if (operation === 'stale') {
     await eventually(() => Boolean(scenario.release), 'Synthetic stale request did not capture the enabled tool schema.');
     await command(sessionID, 'off', false);
@@ -468,7 +482,12 @@ try {
     check(!JSON.stringify(state).includes(token), 'Production result exposed the synthetic credential.');
   }
   check(events.length === 2 && events[0]?.operation === 'generate' && events[1]?.operation === 'edit'
-    && events[1]?.references === 1 && events[1]?.background === 'transparent', 'Generation/edit backend dispatch contract failed.');
+    && events[1]?.references === 3 && events[1]?.background === 'transparent', 'Generation/edit backend dispatch contract failed.');
+  stage = 'reject another session attachment without fallback';
+  await command(otherSession, 'on');
+  await runScenario(otherSession, 'foreign-attachment');
+  check(imageTool(await context(otherSession)).status === 'error', 'Foreign attachment did not fail.');
+  check(events.length === 2, 'Foreign attachment reached image backend.');
   for (const permission of ['edit', 'model'] as const) {
     stage = `${permission} permission denial`;
     const denied = await createSession(permission);

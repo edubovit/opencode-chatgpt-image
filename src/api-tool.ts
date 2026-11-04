@@ -6,6 +6,7 @@ import { resolveOutputPath, writeImage } from "./files.ts"
 import { prepareReference, readReference, type Reference } from "./references.ts"
 import { waitFor, type ImageContext } from "./tool.ts"
 import { ImageRequestError } from "./image-response.ts"
+import { referenceAdvice } from "./attachments.ts"
 
 type ApiConfig = Extract<PluginConfig, { mode: "api" }>
 const fileFields = ["prompt", "output_path", "reference_images", "mask", "markup"]
@@ -16,9 +17,9 @@ function parseInput(value: unknown) {
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 32_000) throw new Error("prompt must contain 1–32000 characters.")
   if (typeof input.output_path !== "string" || !input.output_path.trim()) throw new Error("output_path is required.")
   const references = input.reference_images === undefined ? [] : input.reference_images
-  if (!Array.isArray(references) || references.length > 16 || references.some(path => typeof path !== "string" || !path.trim())) throw new Error("reference_images must contain at most sixteen nonempty paths or HTTPS URLs.")
+  if (!Array.isArray(references) || references.length > 16 || references.some(path => typeof path !== "string" || !path.trim())) throw new Error("reference_images must contain at most sixteen nonempty attachment handles, paths or HTTPS URLs.")
   for (const field of ["mask", "markup"]) {
-    if (input[field] !== undefined && (typeof input[field] !== "string" || !input[field].trim())) throw new Error(`${field} must be a nonempty PNG path or HTTPS URL.`)
+    if (input[field] !== undefined && (typeof input[field] !== "string" || !input[field].trim())) throw new Error(`${field} must be a nonempty PNG attachment handle, path or HTTPS URL.`)
   }
   if (input.mask !== undefined && input.markup !== undefined) throw new Error("mask and markup are mutually exclusive.")
   if (!references.length && (input.mask !== undefined || input.markup !== undefined)) throw new Error("mask and markup require reference_images.")
@@ -40,15 +41,15 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
   }]))
   return {
     name: "openai_image",
-    description: "Generate or edit images using the paid OpenAI Images API, not ChatGPT subscription allowance. Only generate when the user requests an image. Caller parameters override configured defaults. Returns all images as new local files and attachments. Outputs must stay inside the session directory. References may be public HTTPS URLs or local files; external local files are enabled by default, subject to file permissions and allowExternalReferences configuration. Supports up to 16 reference images, masks or markup, and PNG/JPEG/WebP outputs. For n>1, output_path is the first file; others add -2, -3, etc. Existing files are never overwritten. No automatic retries or subscription fallback. Streaming previews are not supported.",
+    description: "Generate or edit images using the paid OpenAI Images API, not ChatGPT subscription allowance. Only generate when the user requests an image. Caller parameters override configured defaults. Returns all images as new local files and attachments. Outputs must stay inside the session directory. References may be session attachment handles, public HTTPS URLs or local files; external local files are enabled by default, subject to file permissions and allowExternalReferences configuration. Supports up to 16 reference images, masks or markup, and PNG/JPEG/WebP outputs. For n>1, output_path is the first file; others add -2, -3, etc. Existing files are never overwritten. No automatic retries or subscription fallback. Streaming previews are not supported. " + referenceAdvice,
     input: {
       type: "object",
       properties: {
-        prompt: { type: "string", minLength: 1, maxLength: 32_000 },
+        prompt: { type: "string", minLength: 1, maxLength: 32_000, description: "Describe the desired result, each selected reference's role by upload order, and what to preserve versus change. n produces variations of this same prompt, not separately specified scenes." },
         output_path: { type: "string", minLength: 1, description: "New output path; extension must match output_format (PNG by default)." },
-        reference_images: { type: "array", maxItems: 16, items: { type: "string", minLength: 1 }, description: "Local paths or public HTTPS PNG/JPEG/WebP references; each less than 50 MB. External local paths require allowExternalReferences. References select editing." },
-        mask: { type: "string", minLength: 1, description: "Optional local or public HTTPS PNG mask, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup." },
-        markup: { type: "string", minLength: 1, description: "Optional local or public HTTPS transparent PNG annotation overlay for GPT Image 2.5 edits, first-reference dimensions. Exclusive with mask." },
+        reference_images: { type: "array", maxItems: 16, items: { type: "string", minLength: 1 }, description: "Exact attachment: handles from Available session images, local paths, or public HTTPS PNG/JPEG/WebP references; each less than 50 MB. Upload order defines image 1, image 2, etc. References select editing. External local paths require allowExternalReferences." },
+        mask: { type: "string", minLength: 1, description: "Optional PNG attachment handle, local path or public HTTPS URL, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup." },
+        markup: { type: "string", minLength: 1, description: "Optional transparent PNG attachment handle, local path or public HTTPS URL for GPT Image 2.5 edits, first-reference dimensions. Exclusive with mask." },
         ...properties,
       },
       required: ["prompt", "output_path"], additionalProperties: false,
@@ -84,8 +85,10 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         const images: ImageUpload[] = []
         const overlays: { mask?: ImageUpload; markup?: ImageUpload } = {}
         let uploadBytes = 0
+        let attachments: ReturnType<ImageContext["session"]["context"]> | undefined
+        const loadAttachments = () => attachments ??= ctx.session.context({ sessionID: call.sessionID })
         const upload = async (reference: Reference, limit: number) => {
-          const image = await readReference(reference, signal, limit, assert)
+          const image = await readReference(reference, signal, limit, assert, loadAttachments)
           uploadBytes += image.bytes.length
           if (uploadBytes > 200 * 1024 * 1024) throw new Error("Combined image uploads exceed the 200 MiB limit.")
           return image

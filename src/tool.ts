@@ -6,11 +6,12 @@ import { generateImage } from "./codex.ts"
 import { resolveOutputPath, writeImage } from "./files.ts"
 import { prepareReference, readReference } from "./references.ts"
 import { ImageRequestError } from "./image-response.ts"
+import { referenceAdvice } from "./attachments.ts"
 
 export type ImageContext = {
   integration: { connection: Connections }
   permission: Pick<Plugin.Context["permission"], "assert">
-  session: Pick<Plugin.Context["session"], "get">
+  session: Pick<Plugin.Context["session"], "get" | "context">
 }
 
 type ImageInput = {
@@ -50,7 +51,7 @@ function parseInput(value: unknown): ImageInput {
   if (typeof input.output_path !== "string" || !input.output_path.trim()) throw new Error("output_path is required.")
   const references = input.reference_images ?? []
   if (!Array.isArray(references) || references.length > 5 || references.some(path => typeof path !== "string" || !path.trim())) {
-    throw new Error("reference_images must contain at most five nonempty paths or HTTPS URLs.")
+    throw new Error("reference_images must contain at most five nonempty attachment handles, paths or HTTPS URLs.")
   }
   const background = input.background ?? "opaque"
   if (background !== "opaque" && background !== "transparent") throw new Error("background must be opaque or transparent.")
@@ -67,13 +68,13 @@ export function createImageTool(
   const resolveAuth = createAuthResolver(ctx.integration.connection)
   return {
     name: "chatgpt_image",
-    description: "Generate or edit one PNG using the active OpenAI Codex subscription login. Only generate when the user requests an image. Consumes Codex allowance. Optional reference_images uploads up to five PNG/JPEG/WebP files or public HTTPS images (10 MiB each). External local references are enabled by default, subject to file permissions and allowExternalReferences configuration. output_path must be a new .png inside the session directory. Describe dimensions/style in the prompt; exact model, quality and size are backend-controlled and unverified. No API-key fallback. Do not automatically retry failures: the backend may already have consumed quota.",
+    description: "Generate or edit one PNG using the active OpenAI Codex subscription login. Only generate when the user requests an image. Consumes Codex allowance. Optional reference_images uploads up to five PNG/JPEG/WebP session attachments, files or public HTTPS images (10 MiB each). External local references are enabled by default, subject to file permissions and allowExternalReferences configuration. output_path must be a new .png inside the session directory. Describe dimensions/style in the prompt; exact model, quality and size are backend-controlled and unverified. No API-key fallback. Do not automatically retry failures: the backend may already have consumed quota. " + referenceAdvice,
     input: {
       type: "object",
       properties: {
         prompt: { type: "string", minLength: 1, maxLength: 32_000, description: "Image description or editing instructions. Include the desired aspect ratio here." },
         output_path: { type: "string", minLength: 1, description: "New .png path inside the session directory, for example output/hero.png. Existing files are never overwritten." },
-        reference_images: { type: "array", maxItems: 5, items: { type: "string", minLength: 1 }, description: "Local paths or public HTTPS image URLs to upload as edit targets or references. External local paths require allowExternalReferences." },
+        reference_images: { type: "array", maxItems: 5, items: { type: "string", minLength: 1 }, description: "Exact attachment: handles from Available session images, local paths, or public HTTPS URLs. Upload order defines image 1, image 2, etc. in the editing prompt. External local paths require allowExternalReferences." },
         background: { type: "string", enum: ["opaque", "transparent"], description: "Requested background, default opaque." },
       },
       required: ["prompt", "output_path"],
@@ -106,8 +107,10 @@ export function createImageTool(
         await assert("edit", [output])
         signal.throwIfAborted()
         const images: string[] = []
+        let attachments: ReturnType<ImageContext["session"]["context"]> | undefined
+        const loadAttachments = () => attachments ??= ctx.session.context({ sessionID: call.sessionID })
         for (const reference of references) {
-          const image = await readReference(reference, signal, 10 * 1024 * 1024, assert)
+          const image = await readReference(reference, signal, 10 * 1024 * 1024, assert, loadAttachments)
           images.push(`data:${image.mime};base64,${image.bytes.toString("base64")}`)
         }
         const auth = await waitFor(signal, resolveAuth)

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { Context } from "@opencode/plugin/promise/plugin"
 import type { CommandDefinition } from "@opencode/plugin/promise/command"
-import type { SessionHooks } from "@opencode/plugin/promise/session"
+import type { SessionHooks, SessionContext } from "@opencode/plugin/promise/session"
 import type { Info, ToolContext, ToolEditor } from "@opencode/plugin/promise/tool"
 import plugin from "../index.ts"
 
@@ -15,6 +15,9 @@ function fixture(options: Context["options"]) {
   const catalog = new Map<string, Info>()
   const commands = new Map<string, CommandDefinition>()
   const hooks = new Set<keyof SessionHooks>()
+  const handlers = new Map<string, ((event: SessionContext) => Promise<void> | void)[]>()
+  let contextReads = 0
+  let loadContext: Context["session"]["context"] = async () => []
   let registrations = 0
   const unused = () => { throw new Error("Unexpected host capability access") }
   const original = [native, "unrelated_tool"].map(name => ({ name, description: name, input: { type: "object" }, execute: unused }))
@@ -39,8 +42,10 @@ function fixture(options: Context["options"]) {
       },
     },
     session: {
-      hook: (async name => {
+      context: (async input => { contextReads++; return loadContext(input) }) satisfies Context["session"]["context"],
+      hook: (async (name, handler) => {
         hooks.add(name)
+        handlers.set(name, [...(handlers.get(name) ?? []), handler as (event: SessionContext) => Promise<void> | void])
         return { async dispose() { hooks.delete(name) } }
       }) satisfies Context["session"]["hook"],
     },
@@ -68,11 +73,52 @@ function fixture(options: Context["options"]) {
   }) as unknown as Context
   return {
     ctx, catalog, commands, hooks, operations, reload,
+    handlers, loadContext(next: typeof loadContext) { loadContext = next }, get contextReads() { return contextReads },
     disposeScope() { transforms.clear(); commands.clear(); hooks.clear(); reload() },
     get tools() { return [...catalog.values()].filter(tool => !original.some(item => item.name === tool.name)) },
     get registrations() { return registrations },
   }
 }
+
+test("request-local attachment lists respect toggles, session scope and sanitized discovery failures", async () => {
+  const f = fixture({ enabledByDefault: false })
+  const cleanup = await plugin.setup(f.ctx)
+  f.loadContext(async ({ sessionID }) => {
+    if (sessionID === "ses_error") throw new Error("secret-host-failure")
+    return [{ id: `msg_${sessionID}`, type: "user", time: { created: 0 }, text: "private text", files: [{ mime: "image/png", data: "private bytes", source: { type: "inline" }, name: "private name" }] }]
+  })
+  const request = async (sessionID: string, hook: string, include = true) => {
+    const tool = f.catalog.get("chatgpt_image")!
+    const event: SessionContext = {
+      sessionID: sessionID as SessionContext["sessionID"], agent: "build" as SessionContext["agent"],
+      model: { providerID: "fake", id: "fake" } as SessionContext["model"], system: [], messages: [], options: {},
+      tools: include ? { chatgpt_image: { description: tool.description, input: { type: "object" } } } : {},
+    }
+    for (const handler of f.handlers.get(hook) ?? []) await handler(event)
+    assert.deepEqual(event.messages, [])
+    assert.deepEqual(event.system, [])
+    return event.tools.chatgpt_image?.description ?? ""
+  }
+  const enable = (sessionID: string) => f.commands.get("images")!.execute({ sessionID: sessionID as ToolContext["sessionID"], prompt: { text: "on" }, delivery: "queue" })
+  assert.equal(await request("ses_a", "context"), "")
+  assert.equal(f.contextReads, 0)
+  await enable("ses_a")
+  for (const hook of ["context", "compaction", "generate"]) {
+    const description = await request("ses_a", hook)
+    assert.match(description, /attachment:msg_ses_a:1/)
+    for (const secret of ["private text", "private bytes", "private name"]) assert.equal(description.includes(secret), false)
+    assert.equal(await request("ses_b", hook), "")
+  }
+  const reads = f.contextReads
+  assert.equal(await request("ses_a", "context", false), "")
+  assert.equal(f.contextReads, reads)
+  await enable("ses_error")
+  const failure = await request("ses_error", "context")
+  assert.match(failure, /list unavailable/)
+  assert.equal(failure.includes("secret-host-failure"), false)
+  await cleanup?.()
+  assert.equal(await request("ses_a", "context"), "")
+})
 
 for (const options of [{}, { apiKey: key }, { mode: "chatgpt", apiKey: key }, { allowExternalReferences: true }, { allowExternalReferences: false }, { enabledByDefault: true }, { enabledByDefault: false }]) {
   test(`default/chatgpt registers only chatgpt_image (${JSON.stringify(Object.keys(options))})`, async () => {

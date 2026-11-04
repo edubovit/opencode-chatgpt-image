@@ -112,12 +112,20 @@ References accept local PNG/JPEG/WebP paths or public HTTPS image URLs. URL down
 
 Local references outside the session directory are enabled by default, subject to `external_directory` and `read` permissions. Set `"allowExternalReferences": false` in the plugin's `options` to restrict local inputs to the session directory. This does not permit outside output paths. Masks and markup accept the same source forms, but must be PNG.
 
+### Attached images
+
+Attach or paste images into your message and describe how to use them. You do not need to save them in the project. With image tools enabled, the agent receives a compact list of attachment handles and can pass selected images directly to generation/editing. Attachments require `read` approval and count toward the same image-count and byte limits as file references.
+
+For example: “Use the attached portraits to preserve my identity. Create five anime-style variations, keeping my glasses and hair.” In API mode the agent can use `n: 5` for variations of one prompt; distinct scene instructions need separate calls. Tool guidance tells the agent to select relevant references, state each image's role, and distinguish what to preserve from what to change.
+
+Handles identify a source message and file slot, not a global `[Image 1]` label. The list shows the newest 32 supported images in the current session's active context. Drafts, stashes, other sessions, and attachments no longer in active context are not available. Missing references cause an error, not silent text-only generation; reattach them if needed. PNG attachments can also serve as API masks or markup overlays. Attachment uploads do not depend on `allowExternalReferences` and do not reopen the original source path or URL.
+
 ### `chatgpt_image` arguments
 
 | Argument | Meaning |
 | --- | --- |
 | `prompt`, `output_path` | Required. Output must be a new `.png`. Put desired aspect ratio/style in the prompt. |
-| `reference_images` | Up to five local or HTTPS PNG/JPEG/WebP images, 10 MiB each. References select editing. |
+| `reference_images` | Up to five session attachment handles, local paths or HTTPS PNG/JPEG/WebP images, 10 MiB each. References select editing. |
 | `background` | `opaque` (default) or `transparent`. |
 
 One PNG per call. Combined encoded request limit: 48 MiB.
@@ -138,7 +146,7 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 | `safety_identifier` | Optional privacy-preserving end-user identifier, at most 128 characters. |
 | `user` | Optional legacy end-user identifier. Prefer `safety_identifier`. |
 | `input_fidelity` | Editing only: `high`/`low` on 1.5, `low` on mini. Rejected for 2/2.5, where support is absent or unverified. |
-| `reference_images` | Up to 16 local or HTTPS PNG/JPEG/WebP images, each less than 50,000,000 bytes. |
+| `reference_images` | Up to 16 session attachment handles, local paths or HTTPS PNG/JPEG/WebP images, each less than 50,000,000 bytes. |
 | `mask` | Optional PNG mask under 4,000,000 bytes; transparent pixels select edit regions in the first reference. |
 | `markup` | Optional transparent PNG annotation overlay for 2.5 edits, under 50,000,000 bytes. Exclusive with `mask`. |
 

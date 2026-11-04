@@ -36,7 +36,7 @@ async function fixture(t: TestContext, defaults: Record<string, unknown> = {}, o
   const lifetime = new AbortController()
   const noOAuth = async () => { oauthReads++; throw new Error("API mode must not read host OAuth") }
   const ctx: ImageContext = {
-    session: { async get() { return {
+    session: { async context() { return [] }, async get() { return {
       id: "ses_test", projectID: "project_test", location: { directory: location },
       cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       time: { created: 0, updated: 0 },
@@ -59,7 +59,7 @@ async function fixture(t: TestContext, defaults: Record<string, unknown> = {}, o
     return fetcher(url, init)
   })
   return {
-    directory, permissions, updates, controller, lifetime, tool,
+    directory, permissions, updates, controller, lifetime, tool, ctx,
     get requests() { return requests }, get oauthReads() { return oauthReads },
     move(value: string) { location = value },
     fetch(value: typeof fetch) { fetcher = value },
@@ -91,6 +91,43 @@ test("API defaults use paid generation without host OAuth or exposing the key", 
   assert.ok(Array.isArray(result.content))
   assert.equal(result.content[1]?.type, "file")
   assert.equal(JSON.stringify([f.tool(), result, f.updates, f.permissions]).includes(key), false)
+})
+
+test("API uploads multiple attachments in selected order and an attached PNG mask", async t => {
+  const f = await fixture(t, {}, { allowExternalReferences: false })
+  f.ctx.session.context = async ({ sessionID }) => {
+    assert.equal(sessionID, "ses_test")
+    return [{ id: "msg_photos", type: "user", text: "Edit", time: { created: 0 }, files: [
+      { data: jpeg.toString("base64"), mime: "image/jpeg", source: { type: "inline" } },
+      { data: png.toString("base64"), mime: "image/png", source: { type: "uri", uri: "file:///must-not-read.png" } },
+    ] }]
+  }
+  f.fetch(async (url, init) => {
+    assert.match(String(url), /\/images\/edits$/)
+    assert.ok(init?.body instanceof FormData)
+    const images = init.body.getAll("image[]") as File[]
+    assert.equal(images.length, 2)
+    assert.deepEqual(Buffer.from(await images[0]!.arrayBuffer()), png)
+    assert.deepEqual(Buffer.from(await images[1]!.arrayBuffer()), jpeg)
+    assert.deepEqual(Buffer.from(await (init.body.get("mask") as File).arrayBuffer()), png)
+    assert.equal(init.body.get("n"), "2")
+    return Response.json({ data: [{ b64_json: png.toString("base64") }, { b64_json: png.toString("base64") }] })
+  })
+  const result = await f.run({ ...defaultInput, n: 2, reference_images: ["attachment:msg_photos:2", "attachment:msg_photos:1"], mask: "attachment:msg_photos:2" })
+  assert.equal(f.requests, 1)
+  assert.equal(f.oauthReads, 0)
+  assert.deepEqual(f.permissions.map(item => item.action), ["openai_image", "edit", "read", "read", "read"])
+  assert.equal((result.metadata?.output_paths as string[]).length, 2)
+})
+
+test("missing API attachments and denied attachment reads prevent billed dispatch", async t => {
+  const f = await fixture(t)
+  const input = { ...defaultInput, reference_images: ["attachment:msg_missing:1"] }
+  await assert.rejects(f.run(input), /unavailable/)
+  const denial = new Error("attachment read denied")
+  f.permission(async input => { if (input.action === "read") throw denial })
+  await assert.rejects(f.run(input), error => error === denial)
+  assert.equal(f.requests, 0)
 })
 
 test("reference ancestors are revalidated after permission approval before uploading", async t => {

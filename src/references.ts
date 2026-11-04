@@ -5,8 +5,10 @@ import https from "node:https";
 import { BlockList, isIP } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { imageType, readReferenceFile, resolveReferencePath } from "./files.ts";
+import { parseAttachment, readAttachment, type AttachmentMessages } from "./attachments.ts";
 
 export type Reference =
+  | NonNullable<ReturnType<typeof parseAttachment>>
   | { readonly kind: "file"; readonly path: string; readonly directory: string; readonly external: boolean }
   | { readonly kind: "https"; readonly url: string };
 
@@ -58,10 +60,12 @@ function referenceURL(source: string): URL {
 }
 
 export function describeReference(reference: Reference): string {
-  return reference.kind === "file" ? reference.path : reference.url;
+  return reference.kind === "attachment" ? reference.handle : reference.kind === "file" ? reference.path : reference.url;
 }
 
 export async function prepareReference(directory: string, source: string, allowExternalReferences: boolean): Promise<Reference> {
+  const attachment = parseAttachment(source);
+  if (attachment) return attachment;
   if (/^[a-z][a-z0-9+.-]*:/i.test(source.trim()) && !/^[a-z]:[/\\]/i.test(source)) {
     return { kind: "https", url: referenceURL(source).href };
   }
@@ -136,8 +140,20 @@ async function download(url: URL, signal: AbortSignal, limit: number): Promise<D
   });
 }
 
-export async function readReference(reference: Reference, signal: AbortSignal, limit: number, authorize: Authorize): Promise<{ bytes: Buffer; mime: string; name: string }> {
+export async function readReference(reference: Reference, signal: AbortSignal, limit: number, authorize: Authorize, attachments?: () => Promise<AttachmentMessages>): Promise<{ bytes: Buffer; mime: string; name: string }> {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Reference image byte limit must be a positive safe integer");
+  if (reference.kind === "attachment") {
+    await abortable(signal, () => authorize("read", [reference.handle]));
+    if (!attachments) throw new Error("Session attachment access is unavailable.");
+    let messages: AttachmentMessages;
+    try { messages = await abortable(signal, attachments); }
+    catch {
+      signal.throwIfAborted();
+      throw new Error("Could not load session attachments. No image request was made.");
+    }
+    signal.throwIfAborted();
+    return readAttachment(reference, messages, limit);
+  }
   if (reference.kind === "file") {
     signal.throwIfAborted();
     if (reference.external) await abortable(signal, () => authorize("external_directory", [join(dirname(reference.path), "*").replaceAll("\\", "/")]));

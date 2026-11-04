@@ -24,7 +24,7 @@ async function fixture(t: TestContext) {
   const controller = new AbortController()
   const lifetime = new AbortController()
   const ctx: ImageContext = {
-    session: { async get() { return {
+    session: { async context() { return [] }, async get() { return {
       id: "ses_test", projectID: "project_test", location: { directory: location },
       cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       time: { created: 0, updated: 0 },
@@ -83,6 +83,29 @@ test("reference reads are authorized and uploaded for editing", async t => {
     return Response.json({ data: [{ b64_json: png.toString("base64") }] })
   })
   await f.run({ prompt: "Make it transparent", output_path: "edit.png", reference_images: ["reference.png"], background: "transparent" })
+})
+
+test("subscription uploads submitted attachment bytes without source-path access", async t => {
+  const f = await fixture(t)
+  f.ctx.session.context = async ({ sessionID }) => {
+    assert.equal(sessionID, f.call.sessionID)
+    assert.deepEqual(f.permissions, ["chatgpt_image", "edit", "read"])
+    return [{ id: "msg_photo", type: "user", text: "Edit this", time: { created: 0 }, files: [{ data: png.toString("base64"), mime: "image/png", source: { type: "inline" } }] }]
+  }
+  f.fetch(async (url, init) => {
+    assert.match(String(url), /\/images\/edits$/)
+    assert.deepEqual(JSON.parse(String(init?.body)).images, [{ image_url: `data:image/png;base64,${png.toString("base64")}` }])
+    return Response.json({ data: [{ b64_json: png.toString("base64") }] })
+  })
+  await f.run({ prompt: "Preserve identity from image 1, change the style", output_path: "attachment.png", reference_images: ["attachment:msg_photo:1"] }, 1000, false)
+  assert.equal(f.credentialReads, 1)
+})
+
+test("unavailable subscription attachments cannot fall back to text-only generation", async t => {
+  const f = await fixture(t)
+  await assert.rejects(f.run({ prompt: "Edit", output_path: "missing.png", reference_images: ["attachment:msg_other_session:1"] }), /unavailable/)
+  assert.equal(f.requests, 0)
+  assert.equal(f.credentialReads, 0)
 })
 
 test("subscription external references default to enabled with separate generation and output permissions", async t => {
