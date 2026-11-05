@@ -106,7 +106,12 @@ type ErrorContext = {
   outcome: ImageErrorOutcome;
   status?: number;
   retryAfterMs?: number;
+  parameter?: string;
+  providerCode?: string;
 };
+
+const errorParameters = ['model', 'prompt', 'size', 'quality', 'background', 'n', 'output_format', 'output_compression', 'complexity', 'frame_count', 'frame_duration_ms', 'svg', 'svg.model', 'image', 'images', 'mask', 'markup', 'moderation', 'input_fidelity', 'safety_identifier', 'user', 'stream', 'partial_images'];
+const requestCodes = ['missing_required_parameter', 'invalid_value', 'invalid_parameter', 'unsupported_parameter', 'unsupported_value', 'unknown_parameter', 'invalid_request_error', 'model_not_found'];
 
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -116,6 +121,8 @@ export class ImageRequestError extends Error {
   readonly outcome: ImageErrorOutcome;
   readonly status?: number;
   readonly retryAfterMs?: number;
+  readonly parameter?: string;
+  readonly providerCode?: string;
 
   constructor(category: ImageErrorCategory, message: string, context: ErrorContext) {
     const status = Number.isInteger(context.status) && context.status! >= 100 && context.status! <= 599 ? context.status : undefined;
@@ -127,13 +134,18 @@ export class ImageRequestError extends Error {
         ? 'The service rejected the request.'
         : 'The request may have been processed; completion and any usage are unknown. Check provider usage before deciding whether to submit again.';
     const retry = retryAfterMs === undefined ? '' : ` Provider retry delay: ${retryAfterMs} ms.`;
-    super(`[${category}; ${context.phase}; ${context.outcome}${status === undefined ? '' : `; HTTP ${status}`}] ${message} ${guidance}${retry} The request was not retried.`);
+    const parameter = member(context.parameter, errorParameters);
+    const providerCode = member(context.providerCode, requestCodes);
+    const detail = `${parameter ? ` Parameter: ${parameter}.` : ''}${providerCode ? ` Code: ${providerCode}.` : ''}${parameter === 'svg.model' ? ' Set svg_model to an available authoring model; SVG also incurs authoring-model charges.' : ''}`;
+    super(`[${category}; ${context.phase}; ${context.outcome}${status === undefined ? '' : `; HTTP ${status}`}] ${message}${detail} ${guidance}${retry} The request was not retried.`);
     this.name = category === 'cancelled' ? 'AbortError' : category === 'timeout' ? 'TimeoutError' : 'ImageRequestError';
     this.category = category;
     this.phase = context.phase;
     this.outcome = context.outcome;
     if (status !== undefined) this.status = status;
     if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
+    if (parameter) this.parameter = parameter;
+    if (providerCode) this.providerCode = providerCode;
   }
 }
 
@@ -164,7 +176,7 @@ function rejectionCategory(value: unknown): RejectionCategory | undefined {
   return undefined;
 }
 
-async function errorCategory(response: Response, signal: AbortSignal): Promise<RejectionCategory | undefined> {
+async function errorCategory(response: Response, signal: AbortSignal): Promise<{ category?: RejectionCategory; parameter?: string; providerCode?: string } | undefined> {
   const maxBytes = 64 * 1024;
   const type = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
   if ((type !== 'application/json' && type !== 'application/problem+json')
@@ -184,7 +196,7 @@ async function errorCategory(response: Response, signal: AbortSignal): Promise<R
       if (chunk.done) {
         complete = true;
         const error = record(record(JSON.parse(buffer.toString('utf8', 0, size)))?.error);
-        return rejectionCategory(error?.code) ?? rejectionCategory(error?.type);
+        return { category: rejectionCategory(error?.code) ?? rejectionCategory(error?.type), parameter: member(error?.param, errorParameters), providerCode: member(error?.code, requestCodes) ?? member(error?.type, requestCodes) };
       }
       if (size + chunk.value.byteLength > maxBytes) return undefined;
       buffer.set(chunk.value, size);
@@ -201,12 +213,14 @@ async function errorCategory(response: Response, signal: AbortSignal): Promise<R
 }
 
 export async function imageStatusError(provider: 'OpenAI' | 'Codex', response: Response, signal: AbortSignal): Promise<ImageRequestError> {
-  const category = await errorCategory(response, signal);
+  const details = await errorCategory(response, signal);
+  const category = details?.category;
   if (signal.aborted) throw imageCancellation(signal, 'response');
   const status = response.status;
   const context: ErrorContext = {
     phase: 'response', outcome: status >= 500 || status === 408 ? 'ambiguous' : 'remote_rejected',
     status, retryAfterMs: retryAfter(response.headers),
+    parameter: details?.parameter, providerCode: details?.providerCode,
   };
   if (status === 401) return new ImageRequestError('authentication', provider === 'OpenAI'
     ? 'OpenAI API authentication was rejected. Check the configured API key.'
@@ -228,5 +242,6 @@ export async function imageStatusError(provider: 'OpenAI' | 'Codex', response: R
     : 'Codex image access was denied for this ChatGPT account. Check account access and plan eligibility.', context);
   if (status === 429) return new ImageRequestError('rate_limit_or_quota', `${provider} image rate or usage limit reached. Check provider usage and limits.`, context);
   if (status >= 500) return new ImageRequestError('remote_error', `${provider} image service is temporarily unavailable. Check service status.`, context);
+  if (status === 400 || status === 422) return new ImageRequestError('invalid_request', `${provider} rejected the image request. Check the identified parameters and model compatibility.`, context);
   return new ImageRequestError('remote_error', `${provider} rejected the image request. Check supported parameters and account access.`, context);
 }

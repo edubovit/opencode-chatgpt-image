@@ -224,7 +224,8 @@ export async function generateApiImages(
     if (!Number.isSafeInteger(count) || count < 1) throw new ImageError('The requested image count must be a positive integer.', 'invalid_request', phase);
     if (!['png', 'jpeg', 'webp', 'svg', 'gif'].includes(format)) throw new ImageError('Output format must be PNG, JPEG, WebP, SVG or GIF.', 'invalid_request', phase);
     if (['svg', 'gif'].includes(format) && (!String(parameters.model).startsWith('gpt-image-2.6-') || images.length || (format === 'svg' && count !== 1) || parameters.output_compression !== undefined)) throw new ImageError('SVG/GIF require 2.6 generation without references or compression; SVG requires one output.', 'invalid_request', phase);
-    const entries = Object.entries(parameters).filter(([key]) => !['orientation', 'response_format', 'stream'].includes(key));
+    if (format === 'svg' ? !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(parameters.svg_model ?? '')) : parameters.svg_model !== undefined) throw new ImageError('SVG requires a valid svg_model; other formats must omit it.', 'invalid_request', phase);
+    const entries = Object.entries(parameters).filter(([key]) => !['orientation', 'response_format', 'stream', 'svg_model'].includes(key));
     const uploads = [...images, ...[overlays.mask, overlays.markup].filter(image => image !== undefined)];
     let size = 0;
     for (const upload of uploads) {
@@ -248,7 +249,7 @@ export async function generateApiImages(
         if (image) body.append(key, new Blob([new Uint8Array(image.bytes)], { type: image.mime }), posix.basename(image.name.replaceAll('\\', '/')));
       }
     } else {
-      body = JSON.stringify(Object.fromEntries(entries));
+      body = JSON.stringify({ ...Object.fromEntries(entries), ...(format === 'svg' ? { svg: { model: parameters.svg_model } } : {}) });
       if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) throw new ImageError('OpenAI image request exceeds the 200 MiB upload and parameter limit.', 'invalid_request', phase);
       headers['Content-Type'] = 'application/json';
     }

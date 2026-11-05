@@ -142,6 +142,7 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 | `n` | `1`; 1–10 outputs. Further files add `-2`, `-3`, etc. before the extension. |
 | `output_format` | `png`; also `jpeg`, `webp`, `svg`, `gif`. SVG/GIF require 2.6 and no reference images. Output extension must match (`.jpg` or `.jpeg` for JPEG). |
 | `complexity` | Unset (API default `high`); 2.6 only: `low`, `medium`, `high`. Use low for focused edits, higher for complex layouts. Separate from quality. |
+| `svg_model` | Required for SVG: authoring language model, for example `gpt-6-astra`. Additional authoring charges and model permission apply. No implicit default. |
 | `frame_count` | GIF only; 2–64. Unset uses API default 9. |
 | `frame_duration_ms` | GIF only; 20–2000, rounded to nearest 10 ms. Unset uses API default 200. |
 | `output_compression` | Unset; 0–100 for JPEG/WebP only. |
@@ -155,15 +156,17 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 
 Masks/markup require reference images and must match the first reference's dimensions; the API validates overlay dimensions and transparency. Combined uploads are limited to 200 MiB.
 
+Inspect edited images before accepting them. A successful response does not guarantee that masks were followed or unselected pixels preserved. Mask artifacts are not corrected by silently inverting the mask or retrying. Markup is an alternative for describing a localized change, not a guarantee of exact pixel preservation.
+
 An explicit `defaults.model` overrides the built-in default; remove it or set `gpt-image-2.6-sunburst` to use 2.6. Model-specific permission rules must also allow the selected model. Subscription mode retains its backend-managed model and does not select Sunburst by name.
 
 For iterative edits, use the latest accepted raster output first and add original identity/product references when needed. Describe the requested change and what must remain unchanged. The tool gives the agent this guidance; improved consistency is not a guarantee of exact preservation.
 
-SVG and animated GIF are generation-only: no references, masks or markup, and no compression control. SVG requires `n: 1`. For GIF, describe the motion and loop and explicitly choose `size: "auto"` unless you intend fixed frame dimensions; the configured 4K size otherwise still applies. Frame count, dimensions and `n` share an API-enforced pixel budget whose numeric limit is not published in the guide. Reduce them if rejected; the plugin does not retry automatically. Frame dimensions use multiples of 16 with a conservative 3840-pixel edge cap. The raster minimum pixel area does not apply to GIF frames.
+SVG and animated GIF are generation-only: no references, masks or markup, and no compression control. SVG requires `n: 1` and `svg_model: "gpt-6-astra"` (or another API-supported authoring model). SVG uses two billable models; `openai_image` permission must allow both the image model and the authoring model. For GIF, describe the motion and loop and explicitly choose `size: "auto"` unless you intend fixed frame dimensions; the configured 4K size otherwise still applies. Frame count, dimensions and `n` share an API-enforced pixel budget whose numeric limit is not published in the guide. Reduce them if rejected; the plugin does not retry automatically. Frame dimensions use multiples of 16 with a conservative 3840-pixel edge cap. The raster minimum pixel area does not apply to GIF frames.
 
 SVG output is restricted to static shapes, paths, text, groups, gradients, clipping, masks and patterns with presentation attributes. Scripts, embedded raster images, external resources, stylesheets/inline style, entity declarations and unsupported elements are rejected, not silently stripped. A rejected response may still be billed. SVG/GIF files are saved and returned as attachments, but previews, animation and model-side viewing depend on OpenCode and the selected model. Neither format is accepted as an edit reference.
 
-All new controls work in configured `defaults` or per call. Use `null` to clear inherited `complexity`, `frame_count` or `frame_duration_ms` when changing models/formats. No complexity setting is forced automatically.
+All new controls work in configured `defaults` or per call. Use `null` to clear inherited `complexity`, `frame_count`, `frame_duration_ms` or `svg_model` when changing models/formats. No complexity setting is forced automatically. Request errors expose allowlisted parameter names and API codes when available, never raw provider messages. A rejected request needs correction; a timeout or server failure has an unknown outcome and must not be retried automatically.
 
 Horizontal/vertical orientation swaps dimensions when needed; square uses the shorter edge. An explicit caller `size` takes precedence over a configured orientation unless the caller also supplies `orientation`. `size: "auto"` cannot be combined with a fixed orientation.
 

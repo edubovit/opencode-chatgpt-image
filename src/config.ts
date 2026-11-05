@@ -27,7 +27,8 @@ export const apiParameterProperties: Record<string, ParameterSchema> = {
   quality: { type: "string", enum: ["auto", "low", "medium", "high", "xhigh", "max"], description: "xhigh/max require GPT Image 2.5 or 2.6; other supported models accept auto, low, medium or high." },
   background: { type: "string", enum: ["auto", "opaque", "transparent"], description: "Transparent requires PNG or WebP; GPT Image 2 transparency is in preview." },
   n: { type: "integer", minimum: 1, maximum: 10, description: "Number of final images." },
-  output_format: { type: "string", enum: ["png", "jpeg", "webp", "svg", "gif"], description: "SVG/GIF require 2.6 and generation without references. SVG requires n=1. Use size:auto for GIF unless frame dimensions are intentional; existing size defaults still apply." },
+  output_format: { type: "string", enum: ["png", "jpeg", "webp", "svg", "gif"], description: "SVG/GIF require 2.6 and generation without references. SVG requires n=1 and svg_model (for example gpt-6-astra), billed in addition to the image model. Use size:auto for GIF unless frame dimensions are intentional; existing size defaults still apply." },
+  svg_model: { type: "string", maxLength: 128, description: "Required for SVG only: authoring language model. gpt-6-astra is verified. Sent as svg.model; incurs authoring-model charges in addition to image generation and requires separate model approval." },
   complexity: { type: "string", enum: ["low", "medium", "high"], description: "2.6 planning effort, separate from quality. Prefer low for focused edits; medium/high for complex layouts. Omitted: API defaults high. Higher effort can increase latency and unwanted changes." },
   frame_count: { type: "integer", minimum: 2, maximum: 64, description: "GIF only: number of frames. API default 9. Frame size, count and n share a server-enforced pixel budget; prefer size:auto." },
   frame_duration_ms: { type: "integer", minimum: 20, maximum: 2000, description: "GIF only: milliseconds per frame, rounded to nearest 10 ms. API default 200. Describe motion and loop in prompt." },
@@ -48,7 +49,7 @@ const baseline: ApiDefaults = {
   orientation: "auto",
 }
 
-export const clearableApiParameters = ["output_compression", "moderation", "input_fidelity", "safety_identifier", "user", "complexity", "frame_count", "frame_duration_ms"]
+export const clearableApiParameters = ["output_compression", "moderation", "input_fidelity", "safety_identifier", "user", "complexity", "frame_count", "frame_duration_ms", "svg_model"]
 
 function object(value: unknown, message: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(message)
@@ -133,6 +134,9 @@ function resolveParameters(defaults: Record<string, unknown>, overrides: Record<
     if (editing) throw new Error("SVG/GIF output is generation-only; references, masks and markup cannot be used.")
     if (format === "svg" && n !== 1) throw new Error("SVG output requires n=1.")
   }
+  if (parameters.svg_model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(parameters.svg_model))) throw new Error("svg_model must be a valid authoring model ID.")
+  if (editing !== undefined && format === "svg" && parameters.svg_model === undefined) throw new Error("SVG output requires svg_model (for example gpt-6-astra). The authoring model is billed separately from image generation.")
+  if (editing !== undefined && format !== "svg" && parameters.svg_model !== undefined) throw new Error("svg_model requires SVG output. Clear an inherited value with null.")
   if (format !== "gif" && (parameters.frame_count !== undefined || parameters.frame_duration_ms !== undefined)) throw new Error("Frame controls require GIF output. Clear inherited controls with null.")
   if (parameters.frame_duration_ms !== undefined) parameters.frame_duration_ms = Math.round(Number(parameters.frame_duration_ms) / 10) * 10
   if (!/^gpt-image-2\.[56]-/.test(model) && ["xhigh", "max"].includes(parameters.quality as string)) {

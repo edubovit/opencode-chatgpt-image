@@ -48,7 +48,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         prompt: { type: "string", minLength: 1, maxLength: 32_000, description: "Describe the desired result, each selected reference's role by upload order, and what to preserve versus change. n produces variations of this same prompt, not separately specified scenes." },
         output_path: { type: "string", minLength: 1, description: "New output path; extension must match output_format (PNG by default)." },
         reference_images: { type: "array", maxItems: 16, items: { type: "string", minLength: 1 }, description: "Exact attachment: handles from Available session images, local paths, or public HTTPS PNG/JPEG/WebP references; each less than 50 MB. Upload order defines image 1, image 2, etc. References select editing. External local paths require allowExternalReferences." },
-        mask: { type: "string", minLength: 1, description: "Optional PNG attachment handle, local path or public HTTPS URL, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup." },
+        mask: { type: "string", minLength: 1, description: "Optional PNG attachment handle, local path or public HTTPS URL, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup. Inspect the result: masks guide generation, not guaranteed pixel preservation. Never invert mask semantics or retry automatically to hide a bad result." },
         markup: { type: "string", minLength: 1, description: "Optional transparent PNG attachment handle, local path or public HTTPS URL for GPT Image 2.5/2.6 edits. Use a separate annotation layer, not a flattened marked-up photo; match the first reference's dimensions after orientation. Exclusive with mask." },
         ...properties,
       },
@@ -58,6 +58,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
     async execute(value, call) {
       const input = parseInput(value)
       const { parameters, format, n } = resolveApiParameters(config.defaults, input.overrides, input.references.length > 0)
+      const controls = Object.fromEntries(["complexity", "frame_count", "frame_duration_ms", "svg_model"].filter(key => parameters[key] !== undefined).map(key => [key, parameters[key]]))
       if (input.markup && !/^gpt-image-2\.[56]-/.test(String(parameters.model))) throw new Error("markup requires a GPT Image 2.5 or 2.6 model.")
       const deadline = new AbortController()
       const timer = setTimeout(() => deadline.abort(), timeoutMs)
@@ -78,9 +79,9 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         const assert = (action: string, resources: string[]) => waitFor(signal, () => ctx.permission.assert({
           sessionID: call.sessionID, agent: call.agent, source: { type: "tool", messageID: call.messageID, id: call.id },
           action, resources, save: resources,
-          ...(action === "openai_image" ? { metadata: { description: "Billed OpenAI API image request.", model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...Object.fromEntries(["complexity", "frame_count", "frame_duration_ms"].filter(key => parameters[key] !== undefined).map(key => [key, parameters[key]])) } } : {}),
+          ...(action === "openai_image" ? { metadata: { description: format === "svg" ? "Billed OpenAI API image request plus SVG authoring-model charges." : "Billed OpenAI API image request.", model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...controls } } : {}),
         }))
-        await assert("openai_image", [String(parameters.model)])
+        await assert("openai_image", [String(parameters.model), ...(format === "svg" ? [String(parameters.svg_model)] : [])])
         await assert("edit", outputs)
         const images: ImageUpload[] = []
         const overlays: { mask?: ImageUpload; markup?: ImageUpload } = {}
@@ -116,10 +117,10 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         }
         return {
           content: [
-            { type: "text", text: `Saved ${saved.join(", ")}\nBilled to the OpenAI API. Requested model: ${parameters.model}; quality: ${parameters.quality}; size: ${parameters.size}.${results[0]?.reported ? `\nReported settings: ${JSON.stringify(results[0].reported)}` : ""}${results[0]?.usage ? `\nReported usage: ${JSON.stringify(results[0].usage)}` : ""}` },
+            { type: "text", text: `Saved ${saved.join(", ")}\nBilled to the OpenAI API. Requested model: ${parameters.model}; quality: ${parameters.quality}; size: ${parameters.size}.${format === "svg" ? ` SVG authoring model: ${parameters.svg_model} (additional authoring charges).` : ""}${results[0]?.reported ? `\nReported settings: ${JSON.stringify(results[0].reported)}` : ""}${results[0]?.usage ? `\nReported usage: ${JSON.stringify(results[0].usage)}` : ""}` },
             ...results.map((image, i) => ({ type: "file" as const, uri: `data:${image.mime};base64,${image.bytes.toString("base64")}`, mime: image.mime, name: basename(outputs[i]!) })),
           ],
-          metadata: { output_paths: saved, requested_model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...Object.fromEntries(["complexity", "frame_count", "frame_duration_ms"].filter(key => parameters[key] !== undefined).map(key => [key, parameters[key]])), ...(results[0]?.reported ? { reported: results[0].reported } : {}), ...(results[0]?.usage ? { usage: results[0].usage } : {}) },
+          metadata: { output_paths: saved, requested_model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...controls, ...(results[0]?.reported ? { reported: results[0].reported } : {}), ...(results[0]?.usage ? { usage: results[0].usage } : {}) },
         }
       } catch (error) {
         const partial = saved.length ? ` Files already saved: ${saved.join(", ")}.` : ""

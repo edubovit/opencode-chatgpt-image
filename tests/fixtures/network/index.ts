@@ -64,6 +64,8 @@ export default Plugin.define({
             || (!extra && request.output_format !== 'png') || Number(request.n) !== 1 || 'stream' in request || 'orientation' in request
             || request.background !== (edit ? 'transparent' : 'auto')) throw new Error('Synthetic API image request fields failed.');
           if ((extra || edit) && request.complexity !== 'low') throw new Error('Complexity not forwarded.');
+          if (request.output_format === 'svg' && JSON.stringify(request.svg) !== JSON.stringify({ model: 'gpt-6-astra' })) throw new Error('SVG requires svg.model.');
+          if ('svg_model' in request) throw new Error('Plugin-only svg_model must not be sent verbatim.');
           if (request.output_format === 'gif' && (Number(request.frame_count) !== 2 || Number(request.frame_duration_ms) !== 200)) throw new Error('Frame controls not forwarded.');
         } else if (request.model !== 'gpt-image-2' || request.quality !== 'auto' || request.size !== 'auto') {
           throw new Error('Synthetic ChatGPT image request fields failed.');

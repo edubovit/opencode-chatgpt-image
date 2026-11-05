@@ -244,7 +244,7 @@ test("configuration defers operation-specific gating until a request", () => {
 })
 
 test("parameter schema contains only supported scalar image parameters and no credentials", () => {
-  assert.deepEqual(Object.keys(apiParameterProperties).sort(), ["model", "size", "orientation", "quality", "background", "n", "output_format", "output_compression", "moderation", "safety_identifier", "user", "input_fidelity", "complexity", "frame_count", "frame_duration_ms"].sort())
+  assert.deepEqual(Object.keys(apiParameterProperties).sort(), ["model", "size", "orientation", "quality", "background", "n", "output_format", "output_compression", "moderation", "safety_identifier", "user", "input_fidelity", "complexity", "frame_count", "frame_duration_ms", "svg_model"].sort())
   for (const property of Object.values(apiParameterProperties)) {
     assert.ok(["string", "integer"].includes(property.type))
     assert.ok(property.description.length > 0)

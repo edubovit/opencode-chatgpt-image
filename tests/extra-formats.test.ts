@@ -15,6 +15,9 @@ test("complexity and animation controls validate, merge, clear and round without
   const configured = parseConfig({ defaults: { output_format: "gif", frame_count: 9, frame_duration_ms: 205, complexity: "low", size: "auto" } }).defaults
   assert.equal(resolveApiParameters(configured, {}, false).parameters.frame_duration_ms, 210)
   assert.equal(resolveApiParameters(configured, { output_format: "png", frame_count: null, frame_duration_ms: null, complexity: null }, false).parameters.complexity, undefined)
+  const svgDefaults = parseConfig({ defaults: { output_format: "svg", svg_model: "gpt-6-astra" } }).defaults
+  assert.equal(resolveApiParameters(svgDefaults, {}, false).parameters.svg_model, "gpt-6-astra")
+  assert.equal(resolveApiParameters(svgDefaults, { output_format: "png", svg_model: null }, false).parameters.svg_model, undefined)
   for (const size of ["auto", "16x16", "512x512"]) assert.equal(resolveApiParameters(defaults, { output_format: "gif", size }, false).format, "gif")
 })
 
@@ -27,6 +30,7 @@ test("invalid combinations fail before dispatch", () => {
     { output_format: "gif", frame_duration_ms: 19 }, { output_format: "gif", size: "15x16" },
     { output_format: "gif", output_compression: 80 }, { output_format: "svg", output_compression: 0 },
     { frame_count: 9 }, { frame_duration_ms: 200 },
+    { output_format: "svg" }, { svg_model: "gpt-6-astra" }, { output_format: "svg", svg_model: "bad\nmodel" },
   ]) assert.throws(() => resolveApiParameters(defaults, input, false))
   for (const output_format of ["svg", "gif"]) assert.throws(() => resolveApiParameters(defaults, { output_format }, true), /generation-only/)
 })
@@ -59,10 +63,14 @@ test("GIF checks complete frames, bounds, sub-blocks and trailer", () => {
 
 for (const [format, bytes, mime] of [["svg", svg, "image/svg+xml"], ["gif", gif, "image/gif"]] as const) {
   test(`${format} transport passes controls and returns validated bytes with correct MIME`, async () => {
-    const parameters = resolveApiParameters(defaults, { output_format: format, complexity: "low", ...(format === "gif" ? { frame_count: 2, frame_duration_ms: 200, size: "auto" } : {}) }, false).parameters
+    const parameters = resolveApiParameters(defaults, { output_format: format, complexity: "low", ...(format === "gif" ? { frame_count: 2, frame_duration_ms: 200, size: "auto" } : { svg_model: "gpt-6-astra" }) }, false).parameters
     let calls = 0
     const result = await generateApiImages({ ...parameters, prompt: "synthetic" }, [], {}, "synthetic", new AbortController().signal, async (_, init) => {
       calls++; assert.equal(JSON.parse(String(init?.body)).complexity, "low")
+      const body = JSON.parse(String(init?.body))
+      if (format === "svg") assert.deepEqual(body.svg, { model: "gpt-6-astra" })
+      else assert.equal(body.svg, undefined)
+      assert.equal(body.svg_model, undefined)
       return Response.json({ data: [{ b64_json: bytes.toString("base64") }], output_format: format })
     })
     assert.equal(calls, 1); assert.deepEqual(result[0]?.bytes, bytes); assert.equal(result[0]?.mime, mime)

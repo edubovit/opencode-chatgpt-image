@@ -6,6 +6,19 @@ import { ImageRequestError, imageCancellation, imageResponseMetadata, imageStatu
 
 const SECRET = 'private-token private-account private prompt private-request-id';
 
+test('request errors retain only allowlisted parameters and codes', async () => {
+  const error = await imageStatusError('OpenAI', Response.json({ error: { type: 'invalid_request_error', code: 'missing_required_parameter', param: 'svg.model', message: SECRET } }, { status: 400 }), new AbortController().signal);
+  assert.equal(error.category, 'invalid_request');
+  assert.equal(error.parameter, 'svg.model');
+  assert.equal(error.providerCode, 'missing_required_parameter');
+  assert.match(error.message, /svg_model/);
+  safe(error);
+  const unknown = await imageStatusError('OpenAI', Response.json({ error: { code: SECRET, param: SECRET, message: SECRET } }, { status: 400 }), new AbortController().signal);
+  assert.equal(unknown.parameter, undefined);
+  assert.equal(unknown.providerCode, undefined);
+  safe(unknown);
+})
+
 function safe(error: ImageRequestError): void {
   assert.ok(error instanceof Error);
   assert.equal(error.cause, undefined);

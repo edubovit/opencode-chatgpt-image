@@ -153,7 +153,7 @@ const provider = createServer((request, response) => {
       const args = {
         prompt: scenario.operation === 'cancel' ? 'synthetic cancellation' : scenario.operation === 'inflight' ? 'synthetic inflight' : 'synthetic image',
         output_path: `${scenario.operation}.${['svg', 'gif'].includes(scenario.operation) ? scenario.operation : 'png'}`,
-        ...(['svg', 'gif'].includes(scenario.operation) ? { output_format: scenario.operation, complexity: 'low', size: 'auto', ...(scenario.operation === 'gif' ? { frame_count: 2, frame_duration_ms: 200 } : {}) } : {}),
+        ...(['svg', 'gif'].includes(scenario.operation) ? { output_format: scenario.operation, complexity: 'low', size: 'auto', ...(scenario.operation === 'gif' ? { frame_count: 2, frame_duration_ms: 200 } : { svg_model: 'gpt-6-astra' }) } : {}),
         ...(scenario.operation === 'edit' && mode === 'api' ? { complexity: 'low' } : {}),
         ...(scenario.operation === 'edit' ? { reference_images: [...attachmentHandles, 'generate.png'], background: 'transparent' } : {}),
         ...(scenario.operation === 'foreign-attachment' ? { reference_images: [attachmentHandles[0]!] } : {}),
@@ -365,6 +365,7 @@ try {
       ...[nativeTool, 'read', 'edit'].map(action => ({ action, resource: '*', effect: 'allow' })),
       { action: 'chatgpt_image', resource: 'gpt-image-2', effect: 'allow' },
       { action: 'openai_image', resource: 'gpt-image-2.6-sunburst', effect: 'allow' },
+      { action: 'openai_image', resource: 'gpt-6-astra', effect: 'allow' },
     ],
     snapshots: false, formatter: false, compaction: { auto: false }, warming: false,
   };

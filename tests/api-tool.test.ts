@@ -25,17 +25,26 @@ for (const [format, bytes, mime] of [["svg", svgFixture, "image/svg+xml"], ["gif
   test(`${format} saves exact bytes, uses its MIME and never overwrites`, async t => {
     const f = await fixture(t)
     f.fetch(async () => Response.json({ data: [{ b64_json: bytes.toString("base64") }] }))
-    const input = { prompt: "Synthetic loop or icon", output_path: `new.${format}`, output_format: format, complexity: "low", size: "auto", ...(format === "gif" ? { frame_count: 2, frame_duration_ms: 200 } : {}) }
+    const input = { prompt: "Synthetic loop or icon", output_path: `new.${format}`, output_format: format, complexity: "low", size: "auto", ...(format === "gif" ? { frame_count: 2, frame_duration_ms: 200 } : { svg_model: "gpt-6-astra" }) }
     const result = await f.run(input)
     assert.deepEqual(await readFile(join(f.directory, input.output_path)), bytes)
     assert.ok(Array.isArray(result.content))
     assert.equal(result.content[1]?.type, "file")
     if (result.content[1]?.type === "file") assert.equal(result.content[1].mime, mime)
     assert.equal(result.metadata?.complexity, "low")
+    assert.deepEqual(f.permissions[0]?.resources, format === "svg" ? ["gpt-image-2.6-sunburst", "gpt-6-astra"] : ["gpt-image-2.6-sunburst"])
     await assert.rejects(f.run(input))
     assert.equal(f.requests, 1)
   })
 }
+
+test("SVG authoring-model denial blocks dispatch, without fallback", async t => {
+  const f = await fixture(t)
+  const denial = new Error("Authoring model denied")
+  f.permission(async input => { if (input.resources.includes("gpt-6-astra")) throw denial })
+  await assert.rejects(f.run({ ...defaultInput, output_path: "new.svg", output_format: "svg", svg_model: "gpt-6-astra" }), error => error === denial)
+  assert.equal(f.requests, 0)
+})
 
 async function fixture(t: TestContext, defaults: Record<string, unknown> = {}, options: { allowExternalReferences?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openai-image-tool-"))
