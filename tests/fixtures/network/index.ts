@@ -1,4 +1,5 @@
 import { Plugin } from '@opencode/plugin';
+import { gifFixture, svgFixture } from '../formats.ts';
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 const endpoints = new Set([
@@ -58,9 +59,12 @@ export default Plugin.define({
           if (images?.some(image => image.image_url !== `data:image/png;base64,${PNG}`)) throw new Error('ChatGPT edit upload failed.');
         }
         if (api) {
-          if (request.model !== 'gpt-image-2.6-sunburst' || request.quality !== 'max' || request.size !== '3840x2160'
-            || request.output_format !== 'png' || Number(request.n) !== 1 || 'stream' in request || 'orientation' in request
+          const extra = request.output_format === 'svg' || request.output_format === 'gif';
+          if (request.model !== 'gpt-image-2.6-sunburst' || request.quality !== 'max' || request.size !== (extra ? 'auto' : '3840x2160')
+            || (!extra && request.output_format !== 'png') || Number(request.n) !== 1 || 'stream' in request || 'orientation' in request
             || request.background !== (edit ? 'transparent' : 'auto')) throw new Error('Synthetic API image request fields failed.');
+          if ((extra || edit) && request.complexity !== 'low') throw new Error('Complexity not forwarded.');
+          if (request.output_format === 'gif' && (Number(request.frame_count) !== 2 || Number(request.frame_duration_ms) !== 200)) throw new Error('Frame controls not forwarded.');
         } else if (request.model !== 'gpt-image-2' || request.quality !== 'auto' || request.size !== 'auto') {
           throw new Error('Synthetic ChatGPT image request fields failed.');
         }
@@ -75,7 +79,7 @@ export default Plugin.define({
           if (!released.ok) throw new Error('Synthetic running image was not released.');
         }
         return Response.json({
-          data: [{ b64_json: PNG }], size: '1x1', quality: 'low', output_format: 'png', background: edit ? 'transparent' : 'opaque',
+          data: [{ b64_json: request.output_format === 'svg' ? svgFixture.toString('base64') : request.output_format === 'gif' ? gifFixture.toString('base64') : PNG }], size: '1x1', quality: 'low', output_format: request.output_format ?? 'png', background: edit ? 'transparent' : 'opaque',
           model: 'synthetic-unverified-model', api_key: token,
           usage: {
             input_tokens: 7, output_tokens: 11, total_tokens: 18,

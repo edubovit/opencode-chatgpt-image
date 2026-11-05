@@ -1,4 +1,4 @@
-export type OutputFormat = "png" | "jpeg" | "webp"
+export type OutputFormat = "png" | "jpeg" | "webp" | "svg" | "gif"
 export type ApiDefaults = Record<string, string | number>
 export type PluginConfig =
   | { mode: "chatgpt"; apiKey?: string; defaults: ApiDefaults; allowExternalReferences?: boolean; enabledByDefault?: boolean }
@@ -27,7 +27,10 @@ export const apiParameterProperties: Record<string, ParameterSchema> = {
   quality: { type: "string", enum: ["auto", "low", "medium", "high", "xhigh", "max"], description: "xhigh/max require GPT Image 2.5 or 2.6; other supported models accept auto, low, medium or high." },
   background: { type: "string", enum: ["auto", "opaque", "transparent"], description: "Transparent requires PNG or WebP; GPT Image 2 transparency is in preview." },
   n: { type: "integer", minimum: 1, maximum: 10, description: "Number of final images." },
-  output_format: { type: "string", enum: ["png", "jpeg", "webp"], description: "Output format." },
+  output_format: { type: "string", enum: ["png", "jpeg", "webp", "svg", "gif"], description: "SVG/GIF require 2.6 and generation without references. SVG requires n=1. Use size:auto for GIF unless frame dimensions are intentional; existing size defaults still apply." },
+  complexity: { type: "string", enum: ["low", "medium", "high"], description: "2.6 planning effort, separate from quality. Prefer low for focused edits; medium/high for complex layouts. Omitted: API defaults high. Higher effort can increase latency and unwanted changes." },
+  frame_count: { type: "integer", minimum: 2, maximum: 64, description: "GIF only: number of frames. API default 9. Frame size, count and n share a server-enforced pixel budget; prefer size:auto." },
+  frame_duration_ms: { type: "integer", minimum: 20, maximum: 2000, description: "GIF only: milliseconds per frame, rounded to nearest 10 ms. API default 200. Describe motion and loop in prompt." },
   output_compression: { type: "integer", minimum: 0, maximum: 100, description: "Optional JPEG/WebP compression percentage, 0–100. Not supported for PNG." },
   moderation: { type: "string", enum: ["auto", "low"], description: "Optional generation-only moderation level. Not accepted for edits." },
   safety_identifier: { type: "string", maxLength: 128, description: "Optional stable safety identifier, at most 128 characters. Prefer a hash rather than personal information." },
@@ -45,7 +48,7 @@ const baseline: ApiDefaults = {
   orientation: "auto",
 }
 
-export const clearableApiParameters = ["output_compression", "moderation", "input_fidelity", "safety_identifier", "user"]
+export const clearableApiParameters = ["output_compression", "moderation", "input_fidelity", "safety_identifier", "user", "complexity", "frame_count", "frame_duration_ms"]
 
 function object(value: unknown, message: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(message)
@@ -82,9 +85,13 @@ function dimensions(size: string): [number, number] | undefined {
   return [Number(match[1]), Number(match[2])]
 }
 
-function validateSize(size: string, model: string): void {
+function validateSize(size: string, model: string, format: OutputFormat): void {
   const edges = dimensions(size)
   if (!edges) return
+  if (format === "gif") {
+    if (edges.some(edge => !Number.isSafeInteger(edge) || edge % 16 !== 0 || edge > 3840)) throw new Error("GIF frame dimensions require multiples of 16, with edges at most 3840. Use size:auto for server-selected dimensions.")
+    return
+  }
   if (!model.startsWith("gpt-image-2")) {
     if (!["1024x1024", "1536x1024", "1024x1536"].includes(size)) {
       throw new Error("This model requires size auto, 1024x1024, 1536x1024 or 1024x1536. Override size when changing model.")
@@ -109,21 +116,30 @@ function resolveParameters(defaults: Record<string, unknown>, overrides: Record<
   const n = parameters.n as number
   const orientation = Object.hasOwn(overrides, "size") && !Object.hasOwn(overrides, "orientation") ? "auto" : parameters.orientation
   const size = parameters.size as string
-  validateSize(size, model)
+  validateSize(size, model, format)
   const edges = dimensions(size)
   if (orientation !== "auto") {
     if (!edges) throw new Error("Non-auto orientation requires a concrete size, not auto.")
     const short = Math.min(...edges)
     const long = Math.max(...edges)
     parameters.size = orientation === "square" ? `${short}x${short}` : orientation === "vertical" ? `${short}x${long}` : `${long}x${short}`
-    validateSize(parameters.size, model)
+    validateSize(parameters.size, model, format)
   }
   delete parameters.orientation
+  const modern = model.startsWith("gpt-image-2.6-")
+  if (parameters.complexity !== undefined && !modern) throw new Error("complexity requires GPT Image 2.6.")
+  if (format === "svg" || format === "gif") {
+    if (!modern) throw new Error("SVG/GIF output requires GPT Image 2.6.")
+    if (editing) throw new Error("SVG/GIF output is generation-only; references, masks and markup cannot be used.")
+    if (format === "svg" && n !== 1) throw new Error("SVG output requires n=1.")
+  }
+  if (format !== "gif" && (parameters.frame_count !== undefined || parameters.frame_duration_ms !== undefined)) throw new Error("Frame controls require GIF output. Clear inherited controls with null.")
+  if (parameters.frame_duration_ms !== undefined) parameters.frame_duration_ms = Math.round(Number(parameters.frame_duration_ms) / 10) * 10
   if (!/^gpt-image-2\.[56]-/.test(model) && ["xhigh", "max"].includes(parameters.quality as string)) {
     throw new Error("quality xhigh/max require GPT Image 2.5 or 2.6. Override quality when changing model.")
   }
   if (format === "jpeg" && parameters.background === "transparent") throw new Error("Transparent backgrounds require png or webp output_format.")
-  if (parameters.output_compression !== undefined && format === "png") throw new Error("output_compression requires jpeg or webp output_format.")
+  if (parameters.output_compression !== undefined && !["jpeg", "webp"].includes(format)) throw new Error("output_compression requires jpeg or webp output_format.")
   if (parameters.input_fidelity !== undefined) {
     if (model !== "gpt-image-1.5" && model !== "gpt-image-1-mini") throw new Error("input_fidelity is only supported for GPT Image 1.5 and GPT Image 1 Mini.")
     if (model === "gpt-image-1-mini" && parameters.input_fidelity !== "low") throw new Error("GPT Image 1 Mini only supports low input_fidelity.")

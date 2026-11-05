@@ -140,7 +140,10 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 | `orientation` | Inferred from size; `auto`, `horizontal`, `vertical`, `square`. This is a convenience, not an API field. |
 | `background` | `auto`; also `opaque`, `transparent`, subject to model/format support. |
 | `n` | `1`; 1–10 outputs. Further files add `-2`, `-3`, etc. before the extension. |
-| `output_format` | `png`; also `jpeg`, `webp`. Output extension must match (`.jpg` or `.jpeg` for JPEG). |
+| `output_format` | `png`; also `jpeg`, `webp`, `svg`, `gif`. SVG/GIF require 2.6 and no reference images. Output extension must match (`.jpg` or `.jpeg` for JPEG). |
+| `complexity` | Unset (API default `high`); 2.6 only: `low`, `medium`, `high`. Use low for focused edits, higher for complex layouts. Separate from quality. |
+| `frame_count` | GIF only; 2–64. Unset uses API default 9. |
+| `frame_duration_ms` | GIF only; 20–2000, rounded to nearest 10 ms. Unset uses API default 200. |
 | `output_compression` | Unset; 0–100 for JPEG/WebP only. |
 | `moderation` | Unset; `auto` or `low`, generation only. Not verified for multipart editing. |
 | `safety_identifier` | Optional privacy-preserving end-user identifier, at most 128 characters. |
@@ -154,7 +157,13 @@ Masks/markup require reference images and must match the first reference's dimen
 
 An explicit `defaults.model` overrides the built-in default; remove it or set `gpt-image-2.6-sunburst` to use 2.6. Model-specific permission rules must also allow the selected model. Subscription mode retains its backend-managed model and does not select Sunburst by name.
 
-The plugin supports raster generation/editing with 2.6. Its new `complexity`, SVG and animated GIF options are not exposed yet. Existing attachment handles, multiple references, masks and markup work through the same input path. Improved identity/detail consistency is model behavior, not a guarantee that every edit preserves every feature.
+For iterative edits, use the latest accepted raster output first and add original identity/product references when needed. Describe the requested change and what must remain unchanged. The tool gives the agent this guidance; improved consistency is not a guarantee of exact preservation.
+
+SVG and animated GIF are generation-only: no references, masks or markup, and no compression control. SVG requires `n: 1`. For GIF, describe the motion and loop and explicitly choose `size: "auto"` unless you intend fixed frame dimensions; the configured 4K size otherwise still applies. Frame count, dimensions and `n` share an API-enforced pixel budget whose numeric limit is not published in the guide. Reduce them if rejected; the plugin does not retry automatically. Frame dimensions use multiples of 16 with a conservative 3840-pixel edge cap. The raster minimum pixel area does not apply to GIF frames.
+
+SVG output is restricted to static shapes, paths, text, groups, gradients, clipping, masks and patterns with presentation attributes. Scripts, embedded raster images, external resources, stylesheets/inline style, entity declarations and unsupported elements are rejected, not silently stripped. A rejected response may still be billed. SVG/GIF files are saved and returned as attachments, but previews, animation and model-side viewing depend on OpenCode and the selected model. Neither format is accepted as an edit reference.
+
+All new controls work in configured `defaults` or per call. Use `null` to clear inherited `complexity`, `frame_count` or `frame_duration_ms` when changing models/formats. No complexity setting is forced automatically.
 
 Horizontal/vertical orientation swaps dimensions when needed; square uses the shorter edge. An explicit caller `size` takes precedence over a configured orientation unless the caller also supplies `orientation`. `size: "auto"` cannot be combined with a fixed orientation.
 

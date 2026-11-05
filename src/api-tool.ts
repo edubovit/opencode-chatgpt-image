@@ -41,7 +41,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
   }]))
   return {
     name: "openai_image",
-    description: "Generate or edit images using the paid OpenAI Images API, not ChatGPT subscription allowance. Only generate when the user requests an image. Caller parameters override configured defaults. Returns all images as new local files and attachments. Outputs must stay inside the session directory. References may be session attachment handles, public HTTPS URLs or local files; external local files are enabled by default, subject to file permissions and allowExternalReferences configuration. Supports up to 16 reference images, masks or markup, and PNG/JPEG/WebP outputs. For n>1, output_path is the first file; others add -2, -3, etc. Existing files are never overwritten. No automatic retries or subscription fallback. Streaming previews are not supported. " + referenceAdvice,
+    description: "Generate or edit images using the paid OpenAI Images API, not ChatGPT subscription allowance. Only generate when the user requests an image. Caller parameters override configured defaults. Returns all images as new local files and attachments. Outputs must stay inside the session directory. References may be session attachment handles, public HTTPS URLs or local files; external local files are enabled by default, subject to file permissions and allowExternalReferences configuration. Supports up to 16 reference images, masks or markup, and PNG/JPEG/WebP outputs. GPT Image 2.6 also supports generation-only SVG (n=1) and animated GIF, without references. Use complexity low for focused edits; medium/high for complex scenes. For GIF, describe motion and looping and prefer size:auto to avoid inheriting 4K frame size. For n>1, output_path is the first file; others add -2, -3, etc. Existing files are never overwritten. No automatic retries or subscription fallback. Streaming previews are not supported. " + referenceAdvice,
     input: {
       type: "object",
       properties: {
@@ -78,7 +78,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         const assert = (action: string, resources: string[]) => waitFor(signal, () => ctx.permission.assert({
           sessionID: call.sessionID, agent: call.agent, source: { type: "tool", messageID: call.messageID, id: call.id },
           action, resources, save: resources,
-          ...(action === "openai_image" ? { metadata: { description: "Billed OpenAI API image request.", model: parameters.model, quality: parameters.quality, size: parameters.size, n } } : {}),
+          ...(action === "openai_image" ? { metadata: { description: "Billed OpenAI API image request.", model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...Object.fromEntries(["complexity", "frame_count", "frame_duration_ms"].filter(key => parameters[key] !== undefined).map(key => [key, parameters[key]])) } } : {}),
         }))
         await assert("openai_image", [String(parameters.model)])
         await assert("edit", outputs)
@@ -119,7 +119,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
             { type: "text", text: `Saved ${saved.join(", ")}\nBilled to the OpenAI API. Requested model: ${parameters.model}; quality: ${parameters.quality}; size: ${parameters.size}.${results[0]?.reported ? `\nReported settings: ${JSON.stringify(results[0].reported)}` : ""}${results[0]?.usage ? `\nReported usage: ${JSON.stringify(results[0].usage)}` : ""}` },
             ...results.map((image, i) => ({ type: "file" as const, uri: `data:${image.mime};base64,${image.bytes.toString("base64")}`, mime: image.mime, name: basename(outputs[i]!) })),
           ],
-          metadata: { output_paths: saved, requested_model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...(results[0]?.reported ? { reported: results[0].reported } : {}), ...(results[0]?.usage ? { usage: results[0].usage } : {}) },
+          metadata: { output_paths: saved, requested_model: parameters.model, quality: parameters.quality, size: parameters.size, n, output_format: format, ...Object.fromEntries(["complexity", "frame_count", "frame_duration_ms"].filter(key => parameters[key] !== undefined).map(key => [key, parameters[key]])), ...(results[0]?.reported ? { reported: results[0].reported } : {}), ...(results[0]?.usage ? { usage: results[0].usage } : {}) },
         }
       } catch (error) {
         const partial = saved.length ? ` Files already saved: ${saved.join(", ")}.` : ""

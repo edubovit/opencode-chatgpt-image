@@ -8,11 +8,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { gifFixture, svgFixture } from '../tests/fixtures/formats.ts';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
 type Scenario = {
-  operation: 'generate' | 'edit' | 'deny' | 'deny-model' | 'cancel' | 'probe' | 'catalog-reload' | 'forged' | 'stale' | 'inflight' | 'foreign-attachment';
+  operation: 'generate' | 'edit' | 'deny' | 'deny-model' | 'cancel' | 'probe' | 'catalog-reload' | 'forged' | 'stale' | 'inflight' | 'foreign-attachment' | 'svg' | 'gif';
   requests: ObjectValue[];
   release?: () => void;
 };
@@ -151,7 +152,9 @@ const provider = createServer((request, response) => {
       if (scenario.operation === 'foreign-attachment') check(!String(tool?.description).includes(attachmentHandles[0]!), 'Attachment catalog leaked across sessions.');
       const args = {
         prompt: scenario.operation === 'cancel' ? 'synthetic cancellation' : scenario.operation === 'inflight' ? 'synthetic inflight' : 'synthetic image',
-        output_path: `${scenario.operation}.png`,
+        output_path: `${scenario.operation}.${['svg', 'gif'].includes(scenario.operation) ? scenario.operation : 'png'}`,
+        ...(['svg', 'gif'].includes(scenario.operation) ? { output_format: scenario.operation, complexity: 'low', size: 'auto', ...(scenario.operation === 'gif' ? { frame_count: 2, frame_duration_ms: 200 } : {}) } : {}),
+        ...(scenario.operation === 'edit' && mode === 'api' ? { complexity: 'low' } : {}),
         ...(scenario.operation === 'edit' ? { reference_images: [...attachmentHandles, 'generate.png'], background: 'transparent' } : {}),
         ...(scenario.operation === 'foreign-attachment' ? { reference_images: [attachmentHandles[0]!] } : {}),
       };
@@ -509,7 +512,16 @@ try {
   check(imageTool(await context(session)).status === 'completed', 'Disabling images aborted an already running generation.');
   check((await readFile(join(workspace, 'inflight.png'))).equals(png), 'Running generation did not save its image after disabling.');
   check(await inventory([], false, session), 'Running generation restored the disabled image schema.');
-  const backendEvents = events.length;
+   if (mode === 'api') {
+     await command(session, 'on');
+     for (const format of ['svg', 'gif'] as const) {
+       stage = `synthetic ${format} output`;
+       await runScenario(session, format);
+       check(imageTool(await context(session)).status === 'completed', `${format} tool failed.`);
+       check((await readFile(join(workspace, `${format}.${format}`))).equals(format === 'svg' ? svgFixture : gifFixture), `${format} saved bytes differ.`);
+     }
+   }
+   const backendEvents = events.length;
   let registered: readonly string[] = [toolName];
   for (const [label, options, expected] of [
     ['missing API key', { mode: 'api' }, []],

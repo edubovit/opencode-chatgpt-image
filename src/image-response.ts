@@ -4,7 +4,7 @@ export type ImageReported = {
   size?: string;
   quality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'standard' | 'hd';
   background?: 'auto' | 'opaque' | 'transparent';
-  output_format?: 'png' | 'jpeg' | 'webp';
+  output_format?: 'png' | 'jpeg' | 'webp' | 'svg' | 'gif';
 };
 
 export type ImageCacheTokens = {
@@ -75,7 +75,7 @@ export function imageResponseMetadata(value: unknown): ImageResponseMetadata {
   if (typeof size === 'string' && size === size.trim() && (size === 'auto' || /^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(size))) reported.size = size;
   const quality = member(source?.quality, ['auto', 'low', 'medium', 'high', 'xhigh', 'max', 'standard', 'hd']);
   const background = member(source?.background, ['auto', 'opaque', 'transparent']);
-  const format = member(source?.output_format, ['png', 'jpeg', 'webp']);
+  const format = member(source?.output_format, ['png', 'jpeg', 'webp', 'svg', 'gif']);
   if (quality) reported.quality = quality;
   if (background) reported.background = background;
   if (format) reported.output_format = format;

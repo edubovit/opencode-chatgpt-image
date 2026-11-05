@@ -179,7 +179,7 @@ for (const options of [
   { mode: "api" }, { mode: "api", apiKey: " " }, { mode: "unknown", apiKey: key },
   { mode: "api", apiKey: key, defaults: { n: 0 } },
   { mode: "api", apiKey: key, defaults: { quality: "invalid" } },
-  { mode: "api", apiKey: key, defaults: { output_format: "gif" } },
+  { mode: "api", apiKey: key, defaults: { output_format: "bmp" } },
   { mode: "api", apiKey: key, defaults: { stream: true } },
   { mode: "api", apiKey: key, endpoint: "https://example.invalid" },
   { mode: "api", apiKey: key, allowExternalReferences: "true" },

@@ -13,12 +13,29 @@ import type { ToolContext } from "@opencode/plugin/promise/tool"
 import { createApiImageTool } from "../src/api-tool.ts"
 import { parseConfig } from "../src/config.ts"
 import type { ImageContext } from "../src/tool.ts"
+import { gifFixture, svgFixture } from "./fixtures/formats.ts"
 
 const key = "synthetic-api-key-never-live"
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64")
 const jpeg = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD50ooor8MP9Uz/2Q==", "base64")
 const webp = Buffer.from("UklGRhwAAABXRUJQVlA4TA8AAAAvAAAAAAcQ/Y/+ByKi/wEA", "base64")
 const defaultInput = { prompt: "A synthetic blue circle", output_path: "output/new.png" }
+
+for (const [format, bytes, mime] of [["svg", svgFixture, "image/svg+xml"], ["gif", gifFixture, "image/gif"]] as const) {
+  test(`${format} saves exact bytes, uses its MIME and never overwrites`, async t => {
+    const f = await fixture(t)
+    f.fetch(async () => Response.json({ data: [{ b64_json: bytes.toString("base64") }] }))
+    const input = { prompt: "Synthetic loop or icon", output_path: `new.${format}`, output_format: format, complexity: "low", size: "auto", ...(format === "gif" ? { frame_count: 2, frame_duration_ms: 200 } : {}) }
+    const result = await f.run(input)
+    assert.deepEqual(await readFile(join(f.directory, input.output_path)), bytes)
+    assert.ok(Array.isArray(result.content))
+    assert.equal(result.content[1]?.type, "file")
+    if (result.content[1]?.type === "file") assert.equal(result.content[1].mime, mime)
+    assert.equal(result.metadata?.complexity, "low")
+    await assert.rejects(f.run(input))
+    assert.equal(f.requests, 1)
+  })
+}
 
 async function fixture(t: TestContext, defaults: Record<string, unknown> = {}, options: { allowExternalReferences?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openai-image-tool-"))

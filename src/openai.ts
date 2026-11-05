@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { posix } from 'node:path';
+import { validGif, validSvg } from './extra-formats.ts';
 import { ImageRequestError, imageCancellation, imageResponseMetadata, imageStatusError } from './image-response.ts';
 import type { ImageErrorCategory, ImageErrorPhase, ImageResponseMetadata } from './image-response.ts';
 
@@ -180,8 +181,8 @@ function decodeImage(encoded: unknown, format: string): ApiImage {
   const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
   if (encoded.length / 4 * 3 - padding > MAX_IMAGE_BYTES) throw new ImageError('OpenAI image exceeds the 32 MiB limit.', 'response_limit');
   const bytes = Buffer.from(encoded, 'base64');
-  const mime = imageMime(bytes);
-  if (mime !== `image/${format}`) throw new ImageError('OpenAI returned an image that does not match the requested output format.');
+  const mime = format === 'svg' ? (validSvg(bytes) ? 'image/svg+xml' : '') : format === 'gif' ? (validGif(bytes) ? 'image/gif' : '') : imageMime(bytes);
+  if (!mime || mime !== (format === 'svg' ? 'image/svg+xml' : `image/${format}`)) throw new ImageError('OpenAI returned invalid, unsafe or unsupported image data that does not match the requested output format.');
   return { bytes, mime };
 }
 
@@ -221,7 +222,8 @@ export async function generateApiImages(
     const count = Number(parameters.n ?? 1);
     const format = String(parameters.output_format ?? 'png');
     if (!Number.isSafeInteger(count) || count < 1) throw new ImageError('The requested image count must be a positive integer.', 'invalid_request', phase);
-    if (!['png', 'jpeg', 'webp'].includes(format)) throw new ImageError('The requested output format must be PNG, JPEG, or WebP.', 'invalid_request', phase);
+    if (!['png', 'jpeg', 'webp', 'svg', 'gif'].includes(format)) throw new ImageError('Output format must be PNG, JPEG, WebP, SVG or GIF.', 'invalid_request', phase);
+    if (['svg', 'gif'].includes(format) && (!String(parameters.model).startsWith('gpt-image-2.6-') || images.length || (format === 'svg' && count !== 1) || parameters.output_compression !== undefined)) throw new ImageError('SVG/GIF require 2.6 generation without references or compression; SVG requires one output.', 'invalid_request', phase);
     const entries = Object.entries(parameters).filter(([key]) => !['orientation', 'response_format', 'stream'].includes(key));
     const uploads = [...images, ...[overlays.mask, overlays.markup].filter(image => image !== undefined)];
     let size = 0;
