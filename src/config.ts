@@ -33,7 +33,7 @@ export const apiParameterProperties: Record<string, ParameterSchema> = {
   frame_count: { type: "integer", minimum: 2, maximum: 64, description: "GIF only: number of frames. API default 9. Frame size, count and n share a server-enforced pixel budget; prefer size:auto." },
   frame_duration_ms: { type: "integer", minimum: 20, maximum: 2000, description: "GIF only: milliseconds per frame, rounded to nearest 10 ms. API default 200. Describe motion and loop in prompt." },
   output_compression: { type: "integer", minimum: 0, maximum: 100, description: "Optional JPEG/WebP compression percentage, 0–100. Not supported for PNG." },
-  moderation: { type: "string", enum: ["auto", "low"], description: "Optional generation-only moderation level. Not accepted for edits." },
+  moderation: { type: "string", enum: ["auto", "low"], description: "Generation ONLY (no reference_images). With any references, pass null, not auto or low: even identity/style references select editing. Omitting this field inherits a configured default and may fail locally before dispatch." },
   safety_identifier: { type: "string", maxLength: 128, description: "Optional stable safety identifier, at most 128 characters. Prefer a hash rather than personal information." },
   user: { type: "string", description: "Optional deprecated end-user identifier; prefer safety_identifier." },
   input_fidelity: { type: "string", enum: ["high", "low"], description: "Optional edit-only fidelity: high/low for GPT Image 1.5, low only for GPT Image 1 Mini. Not enabled for GPT Image 2/2.5/2.6." },
@@ -149,7 +149,7 @@ function resolveParameters(defaults: Record<string, unknown>, overrides: Record<
     if (model === "gpt-image-1-mini" && parameters.input_fidelity !== "low") throw new Error("GPT Image 1 Mini only supports low input_fidelity.")
     if (editing === false) throw new Error("input_fidelity is only supported for edits.")
   }
-  if (editing === true && parameters.moderation !== undefined) throw new Error("moderation is only supported for generation, not edits.")
+  if (editing === true && parameters.moderation !== undefined) throw new Error('moderation is generation-only. Nonempty reference_images selects editing, including identity/style references. Pass "moderation": null to clear the configured or supplied value; omitting it retains the default. No image API request was submitted.')
   return { parameters, format, n }
 }
 

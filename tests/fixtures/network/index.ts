@@ -64,6 +64,7 @@ export default Plugin.define({
             || (!extra && request.output_format !== 'png') || Number(request.n) !== 1 || 'stream' in request || 'orientation' in request
             || request.background !== (edit ? 'transparent' : 'auto')) throw new Error('Synthetic API image request fields failed.');
           if ((extra || edit) && request.complexity !== 'low') throw new Error('Complexity not forwarded.');
+          if (edit ? 'moderation' in request : request.moderation !== 'low') throw new Error('Generation-only default was not preserved or cleared correctly.');
           if (request.output_format === 'svg' && JSON.stringify(request.svg) !== JSON.stringify({ model: 'gpt-6-astra' })) throw new Error('SVG requires svg.model.');
           if ('svg_model' in request) throw new Error('Plugin-only svg_model must not be sent verbatim.');
           if (request.output_format === 'gif' && (Number(request.frame_count) !== 2 || Number(request.frame_duration_ms) !== 200)) throw new Error('Frame controls not forwarded.');

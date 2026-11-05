@@ -156,6 +156,7 @@ const provider = createServer((request, response) => {
         ...(['svg', 'gif'].includes(scenario.operation) ? { output_format: scenario.operation, complexity: 'low', size: 'auto', ...(scenario.operation === 'gif' ? { frame_count: 2, frame_duration_ms: 200 } : { svg_model: 'gpt-6-astra' }) } : {}),
         ...(scenario.operation === 'edit' && mode === 'api' ? { complexity: 'low' } : {}),
         ...(scenario.operation === 'edit' ? { reference_images: [...attachmentHandles, 'generate.png'], background: 'transparent' } : {}),
+        ...(mode === 'api' && ['edit', 'foreign-attachment'].includes(scenario.operation) ? { moderation: null } : {}),
         ...(scenario.operation === 'foreign-attachment' ? { reference_images: [attachmentHandles[0]!] } : {}),
       };
       const reply = () => stream(response, {
@@ -419,7 +420,7 @@ try {
   stage = 'native image tool available before plugin registration';
   await waitForInventory([nativeTool]);
   stage = 'production plugin registration suppresses native image tool';
-  const pluginEntry = { package: pathToFileURL(pluginDirectory).href, options: { ...(mode === 'api' ? { mode } : {}), apiKey: token, enabledByDefault: false } };
+  const pluginEntry = { package: pathToFileURL(pluginDirectory).href, options: { ...(mode === 'api' ? { mode, defaults: { moderation: 'low' } } : {}), apiKey: token, enabledByDefault: false } };
   await writeFile(configPath, JSON.stringify({ ...config, plugins: [...config.plugins, pluginEntry] }));
   await waitForInventory([], [toolName]);
   suppressionRequired = true;

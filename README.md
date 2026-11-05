@@ -132,6 +132,8 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 
 ### `openai_image` arguments and defaults
 
+Omitted arguments inherit configured defaults; omission does not clear a value. **Any reference image selects editing**, including identity/style photos for a new composition. Pass `"moderation": null` with references to clear generation-only defaults. `"auto"` is not equivalent to null. For other incompatible optional defaults, pass null as described below; core controls such as model, size and quality require compatible explicit values.
+
 | Argument | Default / supported values |
 | --- | --- |
 | `model` | `gpt-image-2.6-sunburst`; also 2.6 Flare, 2.5 Sunburst/Flare and their dated snapshots, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1-mini`. |

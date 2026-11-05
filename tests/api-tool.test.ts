@@ -119,6 +119,28 @@ test("API defaults use paid generation without host OAuth or exposing the key", 
   assert.equal(JSON.stringify([f.tool(), result, f.updates, f.permissions]).includes(key), false)
 })
 
+test("reference calls with inherited moderation receive exact guidance and null resolves it", async t => {
+  const f = await fixture(t, { moderation: "low" })
+  await writeFile(join(f.directory, "reference.png"), png)
+  const input = { ...defaultInput, reference_images: ["reference.png"] }
+  await assert.rejects(f.run(input), /Pass "moderation": null.*No image API request was submitted/)
+  assert.equal(f.requests, 0)
+  assert.equal(f.permissions.length, 0)
+  const tool = f.tool()
+  assert.match(tool.description, /^DEFAULTS:.*identity\/style references.*moderation:null/)
+  const props = (tool.input as { properties: Record<string, { description: string; default?: unknown }> }).properties
+  assert.match(props.reference_images!.description, /moderation:null/)
+  assert.match(props.moderation!.description, /pass null/)
+  assert.equal(props.moderation!.default, "low")
+  f.fetch(async (_, init) => {
+    assert.ok(init?.body instanceof FormData)
+    assert.equal(init.body.has("moderation"), false)
+    return Response.json({ data: [{ b64_json: png.toString("base64") }] })
+  })
+  await f.run({ ...input, moderation: null })
+  assert.equal(f.requests, 1)
+})
+
 test("mask guidance names the artifact and recommends markup without automatic substitution", async t => {
   const f = await fixture(t)
   const properties = (f.tool().input as { properties: Record<string, { description: string }> }).properties
