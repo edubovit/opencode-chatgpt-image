@@ -5,6 +5,7 @@ export type PluginConfig =
   | { mode: "api"; apiKey: string; defaults: ApiDefaults; allowExternalReferences?: boolean; enabledByDefault?: boolean }
 
 const models = [
+  "gpt-image-2.6-sunburst", "gpt-image-2.6-flare",
   "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2026-09-08",
   "gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08",
   "gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini",
@@ -20,10 +21,10 @@ type ParameterSchema = {
 }
 
 export const apiParameterProperties: Record<string, ParameterSchema> = {
-  model: { type: "string", enum: models, description: "Image model, including gpt-image-2.5-sunburst. Changing model may require overriding quality and size." },
-  size: { type: "string", description: "GPT Image 2/2.5: auto or WIDTHxHEIGHT, multiples of 16, edges at most 3840, aspect ratio at most 3:1, and 655360–8294400 pixels. Above 3686400 pixels is experimental. Older models: auto, 1024x1024, 1536x1024 or 1024x1536." },
+  model: { type: "string", enum: models, description: "Image model, including gpt-image-2.6-sunburst. Changing model may require overriding quality and size." },
+  size: { type: "string", description: "Plugin bounds for GPT Image 2/2.5/2.6: auto or WIDTHxHEIGHT, multiples of 16, edges at most 3840, aspect ratio at most 3:1, and 655360–8294400 pixels. Above 3686400 pixels is experimental. Older models: auto, 1024x1024, 1536x1024 or 1024x1536." },
   orientation: { type: "string", enum: ["horizontal", "vertical", "square", "auto"], description: "Auto preserves size. Horizontal/vertical swap edges; square uses the shorter edge. An explicit size overrides configured orientation unless orientation is also supplied. Non-auto requires a concrete effective size; this field is not sent to OpenAI." },
-  quality: { type: "string", enum: ["auto", "low", "medium", "high", "xhigh", "max"], description: "xhigh/max require GPT Image 2.5; other supported models accept auto, low, medium or high." },
+  quality: { type: "string", enum: ["auto", "low", "medium", "high", "xhigh", "max"], description: "xhigh/max require GPT Image 2.5 or 2.6; other supported models accept auto, low, medium or high." },
   background: { type: "string", enum: ["auto", "opaque", "transparent"], description: "Transparent requires PNG or WebP; GPT Image 2 transparency is in preview." },
   n: { type: "integer", minimum: 1, maximum: 10, description: "Number of final images." },
   output_format: { type: "string", enum: ["png", "jpeg", "webp"], description: "Output format." },
@@ -31,11 +32,11 @@ export const apiParameterProperties: Record<string, ParameterSchema> = {
   moderation: { type: "string", enum: ["auto", "low"], description: "Optional generation-only moderation level. Not accepted for edits." },
   safety_identifier: { type: "string", maxLength: 128, description: "Optional stable safety identifier, at most 128 characters. Prefer a hash rather than personal information." },
   user: { type: "string", description: "Optional deprecated end-user identifier; prefer safety_identifier." },
-  input_fidelity: { type: "string", enum: ["high", "low"], description: "Optional edit-only fidelity: high/low for GPT Image 1.5, low only for GPT Image 1 Mini. Unsupported for GPT Image 2/2.5." },
+  input_fidelity: { type: "string", enum: ["high", "low"], description: "Optional edit-only fidelity: high/low for GPT Image 1.5, low only for GPT Image 1 Mini. Not enabled for GPT Image 2/2.5/2.6." },
 }
 
 const baseline: ApiDefaults = {
-  model: "gpt-image-2.5-sunburst",
+  model: "gpt-image-2.6-sunburst",
   quality: "max",
   size: "3840x2160",
   output_format: "png",
@@ -118,8 +119,8 @@ function resolveParameters(defaults: Record<string, unknown>, overrides: Record<
     validateSize(parameters.size, model)
   }
   delete parameters.orientation
-  if (!model.startsWith("gpt-image-2.5-") && ["xhigh", "max"].includes(parameters.quality as string)) {
-    throw new Error("quality xhigh/max require GPT Image 2.5. Override quality when changing model.")
+  if (!/^gpt-image-2\.[56]-/.test(model) && ["xhigh", "max"].includes(parameters.quality as string)) {
+    throw new Error("quality xhigh/max require GPT Image 2.5 or 2.6. Override quality when changing model.")
   }
   if (format === "jpeg" && parameters.background === "transparent") throw new Error("Transparent backgrounds require png or webp output_format.")
   if (parameters.output_compression !== undefined && format === "png") throw new Error("output_compression requires jpeg or webp output_format.")

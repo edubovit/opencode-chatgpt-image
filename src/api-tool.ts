@@ -49,7 +49,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
         output_path: { type: "string", minLength: 1, description: "New output path; extension must match output_format (PNG by default)." },
         reference_images: { type: "array", maxItems: 16, items: { type: "string", minLength: 1 }, description: "Exact attachment: handles from Available session images, local paths, or public HTTPS PNG/JPEG/WebP references; each less than 50 MB. Upload order defines image 1, image 2, etc. References select editing. External local paths require allowExternalReferences." },
         mask: { type: "string", minLength: 1, description: "Optional PNG attachment handle, local path or public HTTPS URL, less than 4 MB, first-reference dimensions; transparent pixels select edits. Exclusive with markup." },
-        markup: { type: "string", minLength: 1, description: "Optional transparent PNG attachment handle, local path or public HTTPS URL for GPT Image 2.5 edits, first-reference dimensions. Exclusive with mask." },
+        markup: { type: "string", minLength: 1, description: "Optional transparent PNG attachment handle, local path or public HTTPS URL for GPT Image 2.5/2.6 edits. Use a separate annotation layer, not a flattened marked-up photo; match the first reference's dimensions after orientation. Exclusive with mask." },
         ...properties,
       },
       required: ["prompt", "output_path"], additionalProperties: false,
@@ -58,7 +58,7 @@ export function createApiImageTool(ctx: ImageContext, lifetime: AbortSignal, con
     async execute(value, call) {
       const input = parseInput(value)
       const { parameters, format, n } = resolveApiParameters(config.defaults, input.overrides, input.references.length > 0)
-      if (input.markup && !String(parameters.model).startsWith("gpt-image-2.5-")) throw new Error("markup requires a GPT Image 2.5 model.")
+      if (input.markup && !/^gpt-image-2\.[56]-/.test(String(parameters.model))) throw new Error("markup requires a GPT Image 2.5 or 2.6 model.")
       const deadline = new AbortController()
       const timer = setTimeout(() => deadline.abort(), timeoutMs)
       timer.unref()

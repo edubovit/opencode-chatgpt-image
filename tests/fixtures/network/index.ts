@@ -58,7 +58,7 @@ export default Plugin.define({
           if (images?.some(image => image.image_url !== `data:image/png;base64,${PNG}`)) throw new Error('ChatGPT edit upload failed.');
         }
         if (api) {
-          if (request.model !== 'gpt-image-2.5-sunburst' || request.quality !== 'max' || request.size !== '3840x2160'
+          if (request.model !== 'gpt-image-2.6-sunburst' || request.quality !== 'max' || request.size !== '3840x2160'
             || request.output_format !== 'png' || Number(request.n) !== 1 || 'stream' in request || 'orientation' in request
             || request.background !== (edit ? 'transparent' : 'auto')) throw new Error('Synthetic API image request fields failed.');
         } else if (request.model !== 'gpt-image-2' || request.quality !== 'auto' || request.size !== 'auto') {

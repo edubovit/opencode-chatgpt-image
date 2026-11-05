@@ -67,7 +67,7 @@ Attachment read resources are exact `attachment:msg_...:1` strings, not filesyst
 
 Generation remains foreground. The public plugin API does not expose native durable jobs or late file attachments on completed tool calls; this implementation does not import private services or simulate a durable job system.
 
-API mode supports nonstreaming GPT Image generation/editing, not retired DALL·E controls or streaming partials. The multipart edit contract omits moderation, so that field is rejected for edits. Input fidelity on 2.5 is unverified and rejected. Mask limits follow the stricter multipart reference (<4 MB), not the more permissive guide. These are explicit constraints, never silently dropped overrides. Server-side validation remains authoritative for reference/overlay alignment and actual transparent pixels.
+API mode defaults to `gpt-image-2.6-sunburst` with max quality and 3840x2160 output, and retains earlier model overrides. Both 2.6 aliases accept the existing quality range and markup. Only documented aliases are added, not guessed dated snapshots. The plugin retains its conservative raster size bounds; the API remains authoritative. It supports nonstreaming raster generation/editing, not retired DALL·E controls, streaming partials, complexity, SVG or GIF. The multipart edit contract omits moderation, so that field is rejected for edits. Input fidelity on 2.5/2.6 is unverified and rejected. Mask limits follow the stricter multipart reference (<4 MB), not the more permissive guide. These are explicit constraints, never silently dropped overrides. Server-side validation remains authoritative for reference/overlay alignment and actual transparent pixels.
 
 Permission errors propagate unchanged. Cancellation stops waiting for host permission, session, and credential operations; those public APIs cannot cancel their underlying work, so a host refresh or existing permission request can outlive the tool. Late completion never starts another operation. Cancellation after dispatch cannot cancel remote billing. A session that moves before dispatch or saving is rejected rather than writing to its former location. References can still change on disk between permission approval and reading; treat the workspace and local OS as trusted.
 
@@ -79,6 +79,8 @@ The runtime dependency `@opencode/plugin` is pinned to 2.2.5. Do not infer broad
 - [Pinned host credential resolution](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/integration.ts)
 - [Pinned Codex image request](https://github.com/openai/codex/blob/166aed98544d2aa7500642604199ea5bbca3aa0f/codex-rs/ext/image-generation/src/tool.rs)
 - [Images 2.5 availability](https://openai.com/index/introducing-chatgpt-images-2-5)
+- [GPT Image 2.6 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst)
+- [GPT Image 2.6 controls](https://developers.openai.com/api/docs/guides/image-generation#gpt-image-26)
 - [Unresolved subscription model selection](https://github.com/openai/codex/issues/43965)
 - [Plan-sharing limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
 - [Public image generation reference](https://developers.openai.com/api/reference/resources/images/methods/generate)

@@ -25,7 +25,7 @@ if (directories.length > 1 || directories.some(argument => argument.startsWith('
 const pluginDirectory = directories[0] ? resolve(directories[0]) : repository;
 const toolName = mode === 'api' ? 'openai_image' : 'chatgpt_image';
 const nativeTool = 'experimental_image_generate';
-const imageModel = mode === 'api' ? 'gpt-image-2.5-sunburst' : 'gpt-image-2';
+const imageModel = mode === 'api' ? 'gpt-image-2.6-sunburst' : 'gpt-image-2';
 const executable = process.env.OPENCODE_BIN ?? (process.platform === 'win32'
   ? join(dirname(process.execPath), 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe')
   : 'opencode');
@@ -361,7 +361,7 @@ try {
       { action: '*', resource: '*', effect: 'deny' },
       ...[nativeTool, 'read', 'edit'].map(action => ({ action, resource: '*', effect: 'allow' })),
       { action: 'chatgpt_image', resource: 'gpt-image-2', effect: 'allow' },
-      { action: 'openai_image', resource: 'gpt-image-2.5-sunburst', effect: 'allow' },
+      { action: 'openai_image', resource: 'gpt-image-2.6-sunburst', effect: 'allow' },
     ],
     snapshots: false, formatter: false, compaction: { auto: false }, warming: false,
   };

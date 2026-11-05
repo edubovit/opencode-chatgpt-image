@@ -73,10 +73,10 @@ test("API defaults use paid generation without host OAuth or exposing the key", 
   f.fetch(async (url, init) => {
     assert.equal(String(url), "https://api.openai.com/v1/images/generations")
     assert.deepEqual(f.permissions.map(input => input.action), ["openai_image", "edit"])
-    assert.deepEqual(f.permissions[0]?.resources, ["gpt-image-2.5-sunburst"])
+    assert.deepEqual(f.permissions[0]?.resources, ["gpt-image-2.6-sunburst"])
     assert.deepEqual(f.permissions[1]?.resources, [join(f.directory, defaultInput.output_path)])
     assert.deepEqual(JSON.parse(String(init?.body)), {
-      prompt: defaultInput.prompt, model: "gpt-image-2.5-sunburst", quality: "max", size: "3840x2160",
+      prompt: defaultInput.prompt, model: "gpt-image-2.6-sunburst", quality: "max", size: "3840x2160",
       output_format: "png", n: 1, background: "auto",
     })
     await assert.rejects(lstat(join(f.directory, "output")), { code: "ENOENT" })
@@ -86,7 +86,7 @@ test("API defaults use paid generation without host OAuth or exposing the key", 
   assert.deepEqual(await readFile(join(f.directory, defaultInput.output_path)), png)
   assert.equal(f.oauthReads, 0)
   assert.equal(f.requests, 1)
-  assert.equal(result.metadata?.requested_model, "gpt-image-2.5-sunburst")
+  assert.equal(result.metadata?.requested_model, "gpt-image-2.6-sunburst")
   assert.equal(result.metadata?.effective_model, undefined)
   assert.ok(Array.isArray(result.content))
   assert.equal(result.content[1]?.type, "file")
@@ -256,9 +256,9 @@ for (const [format, extension, bytes] of [["png", "png", png], ["jpeg", "jpg", j
   })
 }
 
-for (const overlay of ["mask", "markup"] as const) {
-  test(`${overlay} and references use authorized multipart editing`, async t => {
-    const f = await fixture(t)
+for (const overlay of ["mask", "markup"] as const) for (const model of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst"]) {
+  test(`${model}: ${overlay} and references use authorized multipart editing`, async t => {
+    const f = await fixture(t, { model })
     await writeFile(join(f.directory, "reference.png"), png)
     await writeFile(join(f.directory, "overlay.png"), png)
     f.fetch(async (url, init) => {
@@ -274,7 +274,7 @@ for (const overlay of ["mask", "markup"] as const) {
       assert.deepEqual(Buffer.from(await mask.arrayBuffer()), png)
       assert.equal(mask.type, "image/png")
       assert.equal(init.body.has(overlay === "mask" ? "markup" : "mask"), false)
-      assert.equal(init.body.get("model"), "gpt-image-2.5-sunburst")
+      assert.equal(init.body.get("model"), model)
       assert.equal(init.body.has("stream"), false)
       return Response.json({ data: [{ b64_json: png.toString("base64") }] })
     })

@@ -59,7 +59,7 @@ This is an unofficial integration with the private Codex backend. It can change 
         "mode": "api",
         "apiKey": "{env:OPENAI_API_KEY}",
         "defaults": {
-          "model": "gpt-image-2.5-sunburst",
+          "model": "gpt-image-2.6-sunburst",
           "quality": "max",
           "size": "3840x2160"
         }
@@ -134,8 +134,8 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 
 | Argument | Default / supported values |
 | --- | --- |
-| `model` | `gpt-image-2.5-sunburst`; also Flare and both 2.5 dated snapshots, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1-mini`. |
-| `quality` | `max`; `auto`, `low`, `medium`, `high`, `xhigh`, `max`. `xhigh`/`max` require 2.5. |
+| `model` | `gpt-image-2.6-sunburst`; also 2.6 Flare, 2.5 Sunburst/Flare and their dated snapshots, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1-mini`. |
+| `quality` | `max`; `auto`, `low`, `medium`, `high`, `xhigh`, `max`. `xhigh`/`max` require 2.5 or 2.6. |
 | `size` | `3840x2160` (horizontal); `auto` or `WIDTHxHEIGHT`, validated for the selected model. |
 | `orientation` | Inferred from size; `auto`, `horizontal`, `vertical`, `square`. This is a convenience, not an API field. |
 | `background` | `auto`; also `opaque`, `transparent`, subject to model/format support. |
@@ -145,16 +145,20 @@ One PNG per call. Combined encoded request limit: 48 MiB.
 | `moderation` | Unset; `auto` or `low`, generation only. Not verified for multipart editing. |
 | `safety_identifier` | Optional privacy-preserving end-user identifier, at most 128 characters. |
 | `user` | Optional legacy end-user identifier. Prefer `safety_identifier`. |
-| `input_fidelity` | Editing only: `high`/`low` on 1.5, `low` on mini. Rejected for 2/2.5, where support is absent or unverified. |
+| `input_fidelity` | Editing only: `high`/`low` on 1.5, `low` on mini. Rejected for 2/2.5/2.6, where support is absent or unverified. |
 | `reference_images` | Up to 16 session attachment handles, local paths or HTTPS PNG/JPEG/WebP images, each less than 50,000,000 bytes. |
 | `mask` | Optional PNG mask under 4,000,000 bytes; transparent pixels select edit regions in the first reference. |
-| `markup` | Optional transparent PNG annotation overlay for 2.5 edits, under 50,000,000 bytes. Exclusive with `mask`. |
+| `markup` | Optional separate transparent PNG annotation overlay for 2.5/2.6 edits, under 50,000,000 bytes. Do not flatten it onto the source. Exclusive with `mask`. |
 
 Masks/markup require reference images and must match the first reference's dimensions; the API validates overlay dimensions and transparency. Combined uploads are limited to 200 MiB.
 
+An explicit `defaults.model` overrides the built-in default; remove it or set `gpt-image-2.6-sunburst` to use 2.6. Model-specific permission rules must also allow the selected model. Subscription mode retains its backend-managed model and does not select Sunburst by name.
+
+The plugin supports raster generation/editing with 2.6. Its new `complexity`, SVG and animated GIF options are not exposed yet. Existing attachment handles, multiple references, masks and markup work through the same input path. Improved identity/detail consistency is model behavior, not a guarantee that every edit preserves every feature.
+
 Horizontal/vertical orientation swaps dimensions when needed; square uses the shorter edge. An explicit caller `size` takes precedence over a configured orientation unless the caller also supplies `orientation`. `size: "auto"` cannot be combined with a fixed orientation.
 
-For 2/2.5, dimensions must be divisible by 16, no edge may exceed 3840, aspect ratio must be at most 3:1, and pixel count must be 655,360–8,294,400. Older models accept only `auto`, `1024x1024`, `1536x1024`, or `1024x1536`. Switching to an older model may also require overriding the default quality and size; incompatible defaults are rejected, not silently downgraded. JPEG cannot be transparent.
+The plugin uses the same conservative size validation for 2/2.5/2.6: dimensions must be divisible by 16, no edge may exceed 3840, aspect ratio must be at most 3:1, and pixel count must be 655,360–8,294,400. Older models accept only `auto`, `1024x1024`, `1536x1024`, or `1024x1536`. Switching to an older model may also require overriding the default quality and size; incompatible defaults are rejected, not silently downgraded. JPEG cannot be transparent.
 
 Transport is nonstreaming: the tool returns final images, not partial previews. `stream`, `partial_images`, `response_format`, legacy DALL·E `style`, arbitrary endpoints, and caller-supplied API keys are not accepted. Describe visual style in the prompt.
 

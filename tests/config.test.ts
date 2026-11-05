@@ -3,7 +3,7 @@ import { test } from "node:test"
 import { apiParameterProperties, parseConfig, resolveApiParameters } from "../src/config.ts"
 
 const base = {
-  model: "gpt-image-2.5-sunburst", quality: "max", size: "3840x2160",
+  model: "gpt-image-2.6-sunburst", quality: "max", size: "3840x2160",
   output_format: "png", n: 1, background: "auto",
 }
 const oldModel = { model: "gpt-image-1.5", quality: "high", size: "1024x1024" }
@@ -119,8 +119,8 @@ test("orientation swaps only edges, squares the shorter edge, and never goes on 
   }
 })
 
-test("all supported model aliases and 2.5 snapshots validate", () => {
-  for (const model of ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst-2026-09-08", "gpt-image-2.5-flare-2026-09-08"]) {
+test("all supported Sunburst/Flare aliases and verified 2.5 snapshots validate", () => {
+  for (const model of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst-2026-09-08", "gpt-image-2.5-flare-2026-09-08"]) {
     assert.equal(resolve({ model }).parameters.model, model)
   }
   assert.equal(resolve({ model: "gpt-image-2", quality: "high" }).parameters.model, "gpt-image-2")
@@ -132,7 +132,7 @@ test("all supported model aliases and 2.5 snapshots validate", () => {
 })
 
 test("unsupported, retired and unverified model identifiers are rejected", () => {
-  for (const model of ["gpt-image-1", "dall-e-2", "dall-e-3", "chatgpt-image-latest", "gpt-image-2.5", "gpt-image-2.5-sunburst-2099-01-01", "", null]) {
+  for (const model of ["gpt-image-1", "dall-e-2", "dall-e-3", "chatgpt-image-latest", "gpt-image-2.5", "gpt-image-2.6", "gpt-image-2.6-sunburst-2026-11-04", "gpt-image-2.5-sunburst-2099-01-01", "", null]) {
     assert.throws(() => resolve({ model }), /model/)
   }
 })
@@ -149,7 +149,7 @@ test("changing model never silently lowers incompatible quality or dimensions", 
 })
 
 test("modern sizes enforce exact edge, pixel and aspect ratio boundaries", () => {
-  for (const model of ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"]) {
+  for (const model of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"]) {
     for (const size of ["auto", "1024x640", "640x1024", "1536x512", "512x1536", "3840x2160", "2160x3840", "2880x2880"]) {
       assert.equal(resolve({ model, quality: "high", size }).parameters.size, size)
     }
@@ -230,7 +230,7 @@ test("input_fidelity is edit-only and limited to verified models", () => {
   }
   assert.equal(resolve({ ...oldModel, model: "gpt-image-1-mini", input_fidelity: "low" }, true).parameters.input_fidelity, "low")
   assert.throws(() => resolve({ ...oldModel, model: "gpt-image-1-mini", input_fidelity: "high" }, true), /only supports low/)
-  for (const model of ["gpt-image-2", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]) {
+  for (const model of ["gpt-image-2", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]) {
     assert.throws(() => resolve({ model, quality: "high", input_fidelity: "low" }, true), /input_fidelity is only supported/)
     assert.throws(() => parseConfig({ defaults: { model, quality: "high", input_fidelity: "low" } }), /input_fidelity is only supported/)
   }
@@ -249,6 +249,6 @@ test("parameter schema contains only supported scalar image parameters and no cr
     assert.ok(["string", "integer"].includes(property.type))
     assert.ok(property.description.length > 0)
   }
-  assert.match(apiParameterProperties.model!.description, /gpt-image-2.5-sunburst/)
+  assert.match(apiParameterProperties.model!.description, /gpt-image-2.6-sunburst/)
   assert.match(apiParameterProperties.orientation!.description, /not sent/)
 })
