@@ -158,6 +158,8 @@ Masks/markup require reference images and must match the first reference's dimen
 
 Inspect edited images before accepting them. A successful response does not guarantee that masks were followed or unselected pixels preserved. Mask artifacts are not corrected by silently inverting the mask or retrying. Markup is an alternative for describing a localized change, not a guarantee of exact pixel preservation.
 
+For localized 2.6 edits, prefer markup when an alpha mask is not specifically required. Native mask requests can return a black-filled edit region despite valid PNG/alpha input. Changing request encoding or increasing quality is not a dependable remedy. Native masks remain available; the plugin does not automatically convert them to markup, change models, or retry. The agent must explain a bad result rather than presenting HTTP success as a successful edit.
+
 An explicit `defaults.model` overrides the built-in default; remove it or set `gpt-image-2.6-sunburst` to use 2.6. Model-specific permission rules must also allow the selected model. Subscription mode retains its backend-managed model and does not select Sunburst by name.
 
 For iterative edits, use the latest accepted raster output first and add original identity/product references when needed. Describe the requested change and what must remain unchanged. The tool gives the agent this guidance; improved consistency is not a guarantee of exact preservation.

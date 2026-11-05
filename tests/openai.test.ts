@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { getEventListeners } from 'node:events';
+import { inflateSync } from 'node:zlib';
 import { test } from 'node:test';
 import { generateApiImages } from '../src/openai.ts';
 import type { ImageUpload } from '../src/openai.ts';
@@ -139,6 +140,29 @@ test('multipart edits preserve references, scalar fields, basename filenames, an
     assert.deepEqual(Buffer.from(await mask.arrayBuffer()), PNG2);
     return imageResponse();
   }, parameters, signal, images, overlays);
+});
+
+test('2.6 mask uploads preserve transparent alpha and hidden RGB across multipart serialization', async () => {
+  const mask = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//8/AwAI/AL+p5qgoAAAAABJRU5ErkJggg==', 'base64');
+  assert.equal(mask[25], 6);
+  assert.deepEqual([...inflateSync(mask.subarray(41, 54))], [0, 255, 255, 255, 0]);
+  for (const model of ['gpt-image-2.6-sunburst', 'gpt-image-2.6-flare']) {
+    let requests = 0;
+    await call(async (url, init) => {
+      requests++;
+      const form = await new Request(url, init).formData();
+      assert.equal(form.get('model'), model);
+      assert.equal(form.has('markup'), false);
+      const file = form.get('mask');
+      assert.ok(file instanceof File);
+      assert.equal(file.type, 'image/png');
+      const sent = Buffer.from(await file.arrayBuffer());
+      assert.deepEqual(sent, mask);
+      assert.deepEqual([...inflateSync(sent.subarray(41, 54))], [0, 255, 255, 255, 0]);
+      return imageResponse();
+    }, { ...INPUT, model }, undefined, [REFERENCE], { mask: { bytes: mask, mime: 'image/png', name: 'mask.png' } });
+    assert.equal(requests, 1);
+  }
 });
 
 for (const overlays of [{}, { markup: REFERENCE }, { markup: REFERENCE, mask: REFERENCE }]) {

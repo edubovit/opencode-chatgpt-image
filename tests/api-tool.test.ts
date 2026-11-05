@@ -119,6 +119,16 @@ test("API defaults use paid generation without host OAuth or exposing the key", 
   assert.equal(JSON.stringify([f.tool(), result, f.updates, f.permissions]).includes(key), false)
 })
 
+test("mask guidance names the artifact and recommends markup without automatic substitution", async t => {
+  const f = await fixture(t)
+  const properties = (f.tool().input as { properties: Record<string, { description: string }> }).properties
+  assert.match(properties.mask!.description, /black-filled/)
+  assert.match(properties.mask!.description, /Prefer markup/)
+  assert.match(properties.mask!.description, /without approval/)
+  assert.match(properties.markup!.description, /without guaranteeing exact pixel preservation/)
+  assert.equal(f.requests, 0)
+})
+
 test("API uploads multiple attachments in selected order and an attached PNG mask", async t => {
   const f = await fixture(t, {}, { allowExternalReferences: false })
   f.ctx.session.context = async ({ sessionID }) => {
